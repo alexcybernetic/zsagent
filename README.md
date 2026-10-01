@@ -34,7 +34,7 @@ It is not:
 
 - zsh, `curl`, `jq`, `tar`
 - `uuidgen` (macOS) or `/proc/sys/kernel/random/uuid` (Linux)
-- an endpoint of the OpenAI Responses API (`/v1/responses`) with streaming and function tools, e.g. OpenAI or LM Studio
+- an OpenAI API key, or a server with an OpenAI-compatible Responses API (`/v1/responses`) with streaming and function tools, e.g. LM Studio
 
 Tested on macOS 27 with zsh 5.9 and jq 1.7.1.
 
