@@ -46,7 +46,7 @@ Tested on macOS 27 with zsh 5.9 and jq 1.7.1.
    ```
 2. Download and extract the release into it:
    ```zsh
-   curl -fsSL https://github.com/alexcybernetic/zsagent/archive/refs/tags/v0.1.1.tar.gz | tar -xz -C ~/.zsagent --strip-components 1
+   curl -fsSL https://github.com/alexcybernetic/zsagent/archive/refs/tags/v0.1.2.tar.gz | tar -xz -C ~/.zsagent --strip-components 1
    ```
 3. Create the config with mode 600:
    ```zsh
@@ -112,7 +112,7 @@ Message-mode lines remain in the zsh history file `$HISTFILE`.
 
 ## Update
 
-1. Download and extract the new version over `~/.zsagent`, with `<version>` e.g. `0.1.1`:
+1. Download and extract the new version over `~/.zsagent`, with `<version>` e.g. `0.1.2`:
    ```zsh
    curl -fsSL https://github.com/alexcybernetic/zsagent/archive/refs/tags/v<version>.tar.gz | tar -xz -C ~/.zsagent --strip-components 1
    ```
@@ -150,6 +150,8 @@ Downloads, with 11 GB.
 | `zsagent --profile <name>` | Sets the shell's profile and a new session id |
 | `zsagent --sessions` | Lists the session files: id prefix, profile, modification time, number of user messages, first user message |
 | `zsagent --resume <id>` | Sets the shell's session id and profile from the one session file whose id starts with `<id>`; fails if none or several match |
+| `zsagent --new` | Sets a new session id; the profile stays, the previous session file is kept |
+| `zsagent --clear` | Deletes the session file of the current session id and profile; fails while a turn of another shell holds the lock |
 | `zsagent --version` | Prints `ZSAGENT_VERSION` |
 | Ctrl+C | Ends the running request or command and prints `interrupted`; the next turn adds the output `Interrupted by the user.` to tool calls without output |
 

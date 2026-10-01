@@ -1,6 +1,6 @@
 # zsagent (Z Shell Agent): connects a language model to the user's interactive zsh, unrestricted; curl + jq against an LLM API.
 
-ZSAGENT_VERSION=0.1.1
+ZSAGENT_VERSION=0.1.2
 ZSAGENT_HOME=${ZSAGENT_HOME:-~/.zsagent}  # directory of config.zsh and sessions/; set it before the plugin loads
 ZSAGENT_PROFILES=  # JSON object of named profiles (provider, url, key, model, options), set in config.zsh; see config.zsh.example
 ZSAGENT_PROFILE=   # profile a new shell starts with; empty: the first profile
@@ -12,6 +12,7 @@ without confirmation; cd, exports and variables persist. Keep answers short.
 Sessions: every conversation is stored in $ZSAGENT_HOME/sessions/<id>.<profile>.json (JSON array of API items). \
 \`zsagent --sessions\` lists them; \`zsagent --resume <id>\` switches the user's shell to a session from the next message on. \
 \`zsagent --profile [name]\` lists the LLM profiles or switches to one (with a new session). \
+\`zsagent --new\` starts a new session; \`zsagent --clear\` deletes the history of the current session. \
 To look into an old session without switching, read its file with jq."
 ZSAGENT_MESSAGE_PS1='👾 %# '  # message mode: replaces PS1, so the mode is visible; config.zsh can override it
 [[ -f $ZSAGENT_HOME/config.zsh ]] && source $ZSAGENT_HOME/config.zsh  # user settings override the defaults above
@@ -163,7 +164,7 @@ _zsagent_request() {
       -d @-
 }
 
-# zsagent [--profile [name] | --sessions | --resume <id> | --version | [--] <text>]
+# zsagent [--profile [name] | --sessions | --resume <id> | --new | --clear | --version | [--] <text>]
 # Without option: send the arguments as the next user message; loop until the model answers without tool calls.
 # Locals carry the _zs_ prefix: the model's commands are eval'd below and see this function's variables.
 zsagent() {
@@ -171,6 +172,8 @@ zsagent() {
     --profile) shift; _zsagent_cmd_profile "$@"; return ;;
     --sessions) _zsagent_cmd_sessions; return ;;
     --resume) shift; _zsagent_cmd_resume "$@"; return ;;
+    --new) _zsagent_cmd_new; return ;;
+    --clear) _zsagent_cmd_clear; return ;;
     --version) print -r -- "zsagent $ZSAGENT_VERSION"; return ;;
     --) shift ;;  # the rest is message text, even if it starts with --
     --*) _zsagent_fail "unknown option '$1'"; return 1 ;;
@@ -313,6 +316,28 @@ _zsagent_cmd_resume() {
   _zsagent_session_name $matches[1]
   ZSAGENT_SESSION=$reply[1] _zsagent_profile=$reply[2]
   print -r -- "resumed ${ZSAGENT_SESSION[1,8]} ($_zsagent_profile)"
+}
+
+# Switch this shell to a new session id; the profile stays, the previous session file is kept.
+_zsagent_cmd_new() {
+  _zsagent_new_id
+  ZSAGENT_SESSION=$REPLY
+  print -r -- "new session ${ZSAGENT_SESSION[1,8]} ($_zsagent_profile)"
+}
+
+# Delete the session file of this shell; id and profile stay, the next message starts the history anew.
+# The session lock is taken first, so a turn running in another shell is not cut off.
+_zsagent_cmd_clear() {
+  local -A _zs_cfg
+  _zsagent_config || return 1
+  _zsagent_session_file
+  if ! _zsagent_lock $REPLY; then
+    _zsagent_fail "--clear: session ${ZSAGENT_SESSION[1,8]} is in use by another shell"
+    return 1
+  fi
+  rm -f $REPLY
+  rm -rf $REPLY.lock
+  print -r -- "cleared session ${ZSAGENT_SESSION[1,8]} ($_zsagent_profile)"
 }
 
 # Without argument: list the profiles with provider, model and URL, the current one marked with *.
