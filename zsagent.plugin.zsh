@@ -1,6 +1,6 @@
 # zsagent (Z Shell Agent): connects a language model to the user's interactive zsh, unrestricted; curl + jq against an LLM API.
 
-ZSAGENT_VERSION=0.1.0
+ZSAGENT_VERSION=0.1.1
 ZSAGENT_HOME=${ZSAGENT_HOME:-~/.zsagent}  # directory of config.zsh and sessions/; set it before the plugin loads
 ZSAGENT_PROFILES=  # JSON object of named profiles (provider, url, key, model, options), set in config.zsh; see config.zsh.example
 ZSAGENT_PROFILE=   # profile a new shell starts with; empty: the first profile

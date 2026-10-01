@@ -46,7 +46,7 @@ Tested on macOS 27 with zsh 5.9 and jq 1.7.1.
    ```
 2. Download and extract the release into it:
    ```zsh
-   curl -fsSL https://github.com/alexcybernetic/zsagent/archive/refs/tags/v0.1.0.tar.gz | tar -xz -C ~/.zsagent --strip-components 1
+   curl -fsSL https://github.com/alexcybernetic/zsagent/archive/refs/tags/v0.1.1.tar.gz | tar -xz -C ~/.zsagent --strip-components 1
    ```
 3. Create the config with mode 600:
    ```zsh
@@ -112,7 +112,7 @@ Message-mode lines remain in the zsh history file `$HISTFILE`.
 
 ## Update
 
-1. Download and extract the new version over `~/.zsagent`, with `<version>` e.g. `0.1.0`:
+1. Download and extract the new version over `~/.zsagent`, with `<version>` e.g. `0.1.1`:
    ```zsh
    curl -fsSL https://github.com/alexcybernetic/zsagent/archive/refs/tags/v<version>.tar.gz | tar -xz -C ~/.zsagent --strip-components 1
    ```
