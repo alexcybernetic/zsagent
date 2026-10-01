@@ -1,0 +1,5 @@
+# user data, kept out of the repository
+config.zsh
+sessions/
+.DS_Store
+docs

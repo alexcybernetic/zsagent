@@ -1,0 +1,33 @@
+# zsagent configuration. Zsagent sources $ZSAGENT_HOME/config.zsh when it is loaded.
+
+# LLM profiles, as one JSON object.
+#   provider  openai | custom (any server with an OpenAI-compatible Responses API, /v1/responses)
+#   url       only for custom; openai uses https://api.openai.com/v1/responses
+#   key       API key
+#   model     the model id (required)
+#   options   a JSON object merged into each request (optional)
+ZSAGENT_PROFILES='{
+  "openai": {
+    "provider": "openai",
+    "key": "sk-proj-...",
+    "model": "gpt-6-sol",
+    "options": {"reasoning": {"effort": "medium", "summary": "auto"}, "service_tier": "fast"}
+  },
+  "lmstudio": {
+    "provider": "custom",
+    "url": "http://localhost:1234/v1/responses",
+    "key": "sk-lm-...",
+    "model": "qwen/qwen3.8-27b"
+  }
+}'
+
+# The profile a new shell starts with; if empty, the first one above.
+ZSAGENT_PROFILE=openai
+
+# Replaces PS1 in message mode (Shift+Tab). Without this line, zsagent uses '👾 %# '.
+# Prompt escapes: %n user, %m host, %~ working directory, %1~ its last component, %F{color}...%f color.
+# ZSAGENT_MESSAGE_PS1='👾 %n@%m %1~: '
+
+# Custom system prompt for new sessions. It replaces the built-in one completely, including the appended
+# system information (OS, zsh version).
+# ZSAGENT_SYSTEM="You are a terse shell assistant. Answer in one line."
