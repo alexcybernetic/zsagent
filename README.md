@@ -153,6 +153,7 @@ Downloads, with 11 GB.
 | `zsagent --new` | Sets a new session id; the profile stays, the previous session file is kept |
 | `zsagent --clear` | Deletes the session file of the current session id and profile; fails while a turn of another shell holds the lock |
 | `zsagent --version` | Prints `ZSAGENT_VERSION` |
+| `zsagent --help` | Prints a usage summary of the options |
 | Ctrl+C | Ends the running request or command and prints `interrupted`; the next turn adds the output `Interrupted by the user.` to tool calls without output |
 
 ### Sessions

@@ -1,6 +1,6 @@
 # zsagent (Z Shell Agent): connects a language model to the user's interactive zsh, unrestricted; curl + jq against an LLM API.
 
-ZSAGENT_VERSION=0.1.2
+ZSAGENT_VERSION=0.1.3
 ZSAGENT_HOME=${ZSAGENT_HOME:-~/.zsagent}  # directory of config.zsh and sessions/; set it before the plugin loads
 ZSAGENT_PROFILES=  # JSON object of named profiles (provider, url, key, model, options), set in config.zsh; see config.zsh.example
 ZSAGENT_PROFILE=   # profile a new shell starts with; empty: the first profile
@@ -164,7 +164,8 @@ _zsagent_request() {
       -d @-
 }
 
-# zsagent [--profile [name] | --sessions | --resume <id> | --new | --clear | --version | [--] <text>]
+# zsagent [--profile [name] | --sessions | --resume <id> | --new | --clear | --version | --help | [--] <text>]
+# Options are long (--name) only: any other argument is message text, so no -h or -? (a message may start with -).
 # Without option: send the arguments as the next user message; loop until the model answers without tool calls.
 # Locals carry the _zs_ prefix: the model's commands are eval'd below and see this function's variables.
 zsagent() {
@@ -175,6 +176,17 @@ zsagent() {
     --new) _zsagent_cmd_new; return ;;
     --clear) _zsagent_cmd_clear; return ;;
     --version) print -r -- "zsagent $ZSAGENT_VERSION"; return ;;
+    --help)  # usage summary
+      print -r -- "usage: zsagent [--profile [name] | --sessions | --resume <id> | --new | --clear | --version | --help | [--] <text>]
+  <text>            send <text> as the next message
+  --profile [name]  list the LLM profiles, or switch to one (new session)
+  --sessions        list the sessions
+  --resume <id>     switch to a session from the next message on
+  --new             start a new session
+  --clear           delete the history of the current session
+  --version         print the version
+  --help            print this summary"
+      return ;;
     --) shift ;;  # the rest is message text, even if it starts with --
     --*) _zsagent_fail "unknown option '$1'"; return 1 ;;
   esac
