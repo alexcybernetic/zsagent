@@ -7,7 +7,7 @@ zsagent is a zsh plugin, the file `zsagent.plugin.zsh`. It POSTs the session his
 It is:
 
 - **a prototype** for experiments and for studying unrestricted model behavior.
-- **minimal:** one zsh file of about 20 KB.
+- **minimal:** one zsh file of about 30 KB.
 - **agentic:** zsagent runs each `shell` tool call of the model in that shell and sends the output back, until a response contains no tool call.
 - **portable:** runtime dependencies are zsh, `curl`, `jq`, and `uuidgen` or `/proc`.
 - **transparent:** the session file is the complete history as a JSON array: the `system` item, the `user` items, the API output items (`reasoning`, `message`, `function_call`) and the `function_call_output` items. It is exactly the `input` of the next request.
