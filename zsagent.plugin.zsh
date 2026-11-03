@@ -204,7 +204,7 @@ zsagent() {
     --*) _zsagent_fail "unknown option '$1'"; return 1 ;;
   esac
   local _zs_session _zs_out _zs_raw _zs_tail
-  local _zs_now _zs_response _zs_error _zs_calls _zs_call _zs_cmd _zs_code
+  local _zs_now _zs_response _zs_error _zs_calls _zs_call _zs_id _zs_cmd _zs_code
   local -F _zs_start=$EPOCHREALTIME
   local -i _zs_in=0 _zs_outtok=0
   local -A _zs_cfg
@@ -303,28 +303,53 @@ _zsagent_rounds() {
   _zsagent_rounds
 }
 
+# The command of tool call $1 (JSON) in REPLY with status 0; for a call that cannot be run, the reason in REPLY
+# with status 1: another tool than shell, arguments that are not a JSON object, or no command string.
+_zsagent_call_command() {
+  emulate -L zsh
+  local out
+  out=$(jq -r '(.arguments | try fromjson catch null) as $a
+    | if .name != "shell" then "1", "unknown tool \(.name | tojson); the only tool is shell"
+      elif ($a | type) != "object" then "1", "the arguments are not a JSON object"
+      elif ($a.command | type) != "string" then "1", "the arguments need a string field \"command\""
+      elif ($a.command | test("^\\s*$")) then "1", "the command is empty"
+      else "0", $a.command end' <<< $1 2>/dev/null) || { REPLY="the tool call is not valid JSON"; return 1 }
+  REPLY=${out#*$'\n'}
+  return ${out%%$'\n'*}
+}
+
 # Run the tool calls $@ (one JSON object each) in this shell, one after another, and save each result.
 # Output goes to the file $_zs_out (for the model) and is shown live by a tail process; no pipe is involved,
 # so a background process started by the command cannot block the turn.
 _zsagent_calls() {
   (( $# )) || return 0
   _zs_call=$1
-  _zs_cmd=$(jq -r '.arguments | fromjson | .command' <<< "$_zs_call")
-  print -r -- $'\e[90m'"▸ $_zs_cmd"$'\e[0m'
-  : >| "$_zs_out"
-  _zsagent_tail "$_zs_out"
-  _zs_tail=$REPLY
-  _zsagent_shadow
-  # The anonymous function keeps a `return` in the command from leaving zsagent.
-  () { eval "$_zs_cmd" } >| "$_zs_out" 2>&1
-  _zs_code=$?
-  _zsagent_unshadow
-  sleep 0.1  # let tail show the last output
-  kill "$_zs_tail" 2>/dev/null
-  _zs_tail=
+  _zs_id=$(jq -r '.call_id | strings' <<< "$_zs_call" 2>/dev/null)
+  [[ -n $_zs_id ]] || { _zsagent_fail "the API sent a tool call without call_id; stopping"; return 1 }
+  if _zsagent_call_command "$_zs_call"; then
+    _zs_cmd=$REPLY
+    print -r -- $'\e[90m'"▸ $_zs_cmd"$'\e[0m'
+    : >| "$_zs_out"
+    _zsagent_tail "$_zs_out"
+    _zs_tail=$REPLY
+    _zsagent_shadow
+    # The anonymous function keeps a `return` in the command from leaving zsagent.
+    () { eval "$_zs_cmd" } >| "$_zs_out" 2>&1
+    _zs_code=$?
+    _zsagent_unshadow
+    sleep 0.1  # let tail show the last output
+    kill "$_zs_tail" 2>/dev/null
+    _zs_tail=
+  else
+    # A call that cannot be run gets the reason as its output, so the model can correct it.
+    print -r -- $'\e[90m'"▸ not run: $REPLY"$'\e[0m'
+    print -r -- "error: $REPLY; nothing was run" >| "$_zs_out"
+    _zs_code=
+  fi
   # If the result cannot be saved, stop: a further request would make the model repeat the command.
-  jq -n --arg id "$(jq -r .call_id <<< "$_zs_call")" --arg code "$_zs_code" --rawfile output "$_zs_out" \
-    '{type: "function_call_output", call_id: $id, output: ("exit code " + $code + "\n" + $output)}' |
+  jq -n --arg id "$_zs_id" --arg code "$_zs_code" --rawfile output "$_zs_out" \
+    '{type: "function_call_output", call_id: $id,
+      output: ((if $code == "" then "" else "exit code " + $code + "\n" end) + $output)}' |
     _zsagent_add "$_zs_session" ||
     { _zsagent_fail "cannot save the command result in $_zs_session; stopping"; return 1 }
   shift

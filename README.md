@@ -160,7 +160,7 @@ Downloads, with 11 GB.
 
 - The session id (UUID), is created when the plugin is loaded in a shell; it is kept when the plugin is sourced again.
 - A session is the file `~/.zsagent/sessions/<id>.<profile>.json`, a JSON array.
-- It holds the system prompt, each user message, each API output item without null fields, and each tool output as `exit code <N>` plus the command's output.
+- It holds the system prompt, each user message, each API output item without null fields, and each tool output as `exit code <N>` plus the command's output. A tool call that cannot be run (another tool than `shell`, arguments that are not a JSON object with a non-empty string `command`) is not run; its output is `error: <reason>; nothing was run`.
 - zsagent sets the sessions directory to mode 700 and the file to mode 600 at every turn. Other user accounts can't read it; processes of the same user account, including the model's commands, and root can.
 - Several shells can use the same session, but only one turn at a time: a turn takes a lock (`<file>.lock` with the shell's process ID), and a turn started meanwhile from another shell fails with an error.
 

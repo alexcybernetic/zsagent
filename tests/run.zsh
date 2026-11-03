@@ -37,6 +37,11 @@ mock_calls() {
     --args "$@" | _sse $n
 }
 
+# Response N: the output items given as a JSON array.
+mock_output() {
+  jq -nc --argjson o $2 '{type: "response.completed", response: {output: $o, usage: {input_tokens: 10, output_tokens: 2}}}' | _sse $1
+}
+
 # Response N: raw text as it is.
 mock_raw() { print -r -- $2 > $MOCK/resp.$1 }
 
@@ -232,6 +237,37 @@ test_many_rounds() {
   turn go
   assert_eq $STATUS 0 status
   assert_eq "$(sq '[.[] | select(.type == "function_call_output")] | length')" 30 "outputs"
+}
+
+test_invalid_calls_not_run() {
+  mock_output 1 '[
+    {"type": "function_call", "call_id": "a", "name": "shell", "arguments": "{bad json"},
+    {"type": "function_call", "call_id": "b", "name": "shell", "arguments": "{\"cmd\": \"touch ran\"}"},
+    {"type": "function_call", "call_id": "c", "name": "python", "arguments": "{\"command\": \"touch ran\"}"},
+    {"type": "function_call", "call_id": "d", "name": "shell", "arguments": "{\"command\": \"  \"}"},
+    {"type": "function_call", "call_id": "e", "name": "shell", "arguments": "{\"command\": 5}"},
+    {"type": "function_call", "call_id": "f", "name": "shell", "arguments": "{\"command\": \"echo fine\"}"}]'
+  mock_text 2 done
+  cd $T
+  turn go
+  assert_eq $STATUS 0 status
+  [[ ! -e $T/ran ]] || fail "an invalid call ran"
+  local -A out=("${(@f)$(sq '.[] | select(.type == "function_call_output") | .call_id, (.output | @json)')}")
+  assert_eq $out[a] '"error: the arguments are not a JSON object; nothing was run\n"' a
+  assert_eq $out[b] '"error: the arguments need a string field \"command\"; nothing was run\n"' b
+  assert_eq $out[c] '"error: unknown tool \"python\"; the only tool is shell; nothing was run\n"' c
+  assert_eq $out[d] '"error: the command is empty; nothing was run\n"' d
+  assert_eq $out[e] '"error: the arguments need a string field \"command\"; nothing was run\n"' e
+  assert_eq $out[f] '"exit code 0\nfine\n"' f
+}
+
+test_call_without_id_stops() {
+  mock_output 1 '[{"type": "function_call", "name": "shell", "arguments": "{\"command\": \"touch ran\"}"}]'
+  cd $T
+  turn go
+  assert_eq $STATUS 1 status
+  assert_match $OUT '*without call_id*' error
+  [[ ! -e $T/ran ]] || fail "the call ran"
 }
 
 test_prompt_roundtrip() {
