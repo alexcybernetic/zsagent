@@ -75,12 +75,7 @@ The plugin sources `$ZSAGENT_HOME/config.zsh` when it is loaded. [`config.zsh.ex
 | `ZSAGENT_CONNECT_TIMEOUT` | Seconds to connect to the API; default `30` |
 | `ZSAGENT_STALL_TIMEOUT` | Seconds a response may send nothing before it is aborted; default `600`, `0`: no limit |
 
-To apply a change of `config.zsh` in a running shell:
-
-1. Load the plugin again:
-   ```zsh
-   source ~/.zsagent/zsagent.plugin.zsh
-   ```
+zsagent reads `config.zsh` again by itself before each `zsagent` command (and each message) when the file changed since it was read. `zsagent --reload` reads it at once.
 
 ### Profiles
 
@@ -156,6 +151,7 @@ Downloads, with 11 GB.
 | `zsagent --resume <id>` | Sets the shell's session id and profile from the one session file whose id starts with `<id>`; fails if none or several match |
 | `zsagent --new` | Sets a new session id; the profile stays, the previous session file is kept |
 | `zsagent --clear` | Deletes the session file of the current session id and profile; fails while a turn holds the lock |
+| `zsagent --reload` | Reads `config.zsh` again; zsagent also does this by itself when the file changed |
 | `zsagent --version` | Prints `ZSAGENT_VERSION` |
 | `zsagent --help` | Prints a usage summary of the options |
 | Ctrl+C | Ends the running request or command and prints `interrupted`. The interrupted command gets an output that says it may have taken effect, with what it printed until then; the calls of the response not yet run get `not run: …`. If a turn ends without that (e.g. a closed terminal), the next turn gives each call without output `no result recorded: …` |

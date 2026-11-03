@@ -2,9 +2,6 @@
 
 ZSAGENT_VERSION=0.1.4
 ZSAGENT_HOME=${ZSAGENT_HOME:-~/.zsagent}  # directory of config.zsh and sessions/; set it before the plugin loads
-ZSAGENT_PROFILES=  # JSON object of named profiles (provider, url, key, model, options), set in config.zsh; see config.zsh.example
-ZSAGENT_PROFILE=   # profile a new shell starts with; empty: the first profile
-ZSAGENT_SYSTEM=  # set in config.zsh: replaces the complete system prompt below (including the system information)
 _zsagent_system="You are a language model connected to the user's interactive zsh by zsagent (Z Shell Agent). \
 The user writes to you from the shell prompt. With the shell tool you run commands directly in that shell, \
 without confirmation; cd, exports and variables persist. Keep answers short.
@@ -14,14 +11,41 @@ Sessions: every conversation is stored in $ZSAGENT_HOME/sessions/<id>.<profile>.
 \`zsagent --profile [name]\` lists the LLM profiles or switches to one (with a new session). \
 \`zsagent --new\` starts a new session; \`zsagent --clear\` deletes the history of the current session. \
 To look into an old session without switching, read its file with jq."
-ZSAGENT_MESSAGE_PS1='👾 %# '  # message mode: replaces PS1, so the mode is visible; config.zsh can override it
-# Limits; config.zsh can change them (whole numbers).
-ZSAGENT_OUTPUT_LIMIT=30000   # characters of a command's output the model gets; longer output loses its middle; 0: no limit
-ZSAGENT_MAX_ROUNDS=100       # requests per turn (1-500); then the turn stops, and a new message continues it
-ZSAGENT_CONNECT_TIMEOUT=30   # seconds to connect to the API
-ZSAGENT_STALL_TIMEOUT=600    # seconds a response may send nothing before it is aborted; 0: no limit
-[[ -f $ZSAGENT_HOME/config.zsh ]] && source $ZSAGENT_HOME/config.zsh  # user settings override the defaults above
 zmodload zsh/datetime  # $EPOCHREALTIME, $EPOCHSECONDS and strftime
+zmodload -F zsh/stat b:zstat  # zstat for file times (without replacing the stat command)
+zmodload -F zsh/system b:zsystem  # zsystem flock for the session locks
+
+# Set the defaults, then the user's settings from config.zsh over them. Runs when the plugin loads, on
+# `zsagent --reload`, and before each zsagent command when config.zsh changed since it was read.
+# config.zsh runs inside this function: plain assignments are global, `typeset` without -g would be local.
+_zsagent_load_config() {
+  local conf=$ZSAGENT_HOME/config.zsh
+  ZSAGENT_PROFILES=  # JSON object of named profiles (provider, url, key, model, options); see config.zsh.example
+  ZSAGENT_PROFILE=   # profile a new shell starts with; empty: the first profile
+  ZSAGENT_SYSTEM=    # replaces the complete built-in system prompt (including the system information)
+  ZSAGENT_MESSAGE_PS1='👾 %# '  # message mode: replaces PS1, so the mode is visible
+  # Limits (whole numbers).
+  ZSAGENT_OUTPUT_LIMIT=30000   # characters of a command's output the model gets; longer output loses its middle; 0: no limit
+  ZSAGENT_MAX_ROUNDS=100       # requests per turn (1-500); then the turn stops, and a new message continues it
+  ZSAGENT_CONNECT_TIMEOUT=30   # seconds to connect to the API
+  ZSAGENT_STALL_TIMEOUT=600    # seconds a response may send nothing before it is aborted; 0: no limit
+  _zsagent_config_stamp=
+  [[ -f $conf ]] || return 0
+  source $conf
+  _zsagent_config_stamp=$(zstat +mtime $conf)/$(zstat +size $conf)
+  # config.zsh holds the API keys: warn when other users can read it.
+  (( 8#$(zstat -o +mode $conf) & 8#077 )) &&
+    print -r -- "zsagent: other users can read $conf, which holds API keys; chmod 600 it" >&2
+  return 0
+}
+
+# Read config.zsh again if it changed (time or size) since it was read.
+_zsagent_reload_if_changed() {
+  local conf=$ZSAGENT_HOME/config.zsh stamp=
+  [[ -f $conf ]] && stamp=$(zstat +mtime $conf)/$(zstat +size $conf)
+  [[ $stamp == $_zsagent_config_stamp ]] || _zsagent_load_config
+}
+_zsagent_load_config
 # A new session id: a UUID from uuidgen (macOS) or the kernel (Linux).
 _zsagent_new_id() {
   emulate -L zsh
@@ -30,12 +54,6 @@ _zsagent_new_id() {
 # One session and one profile per shell; both survive sourcing the plugin again.
 [[ -n $ZSAGENT_SESSION ]] || { _zsagent_new_id; ZSAGENT_SESSION=$REPLY }
 _zsagent_profile=${_zsagent_profile:-$ZSAGENT_PROFILE}
-zmodload -F zsh/stat b:zstat  # zstat for file times (without replacing the stat command)
-# config.zsh holds the API keys: warn when other users can read it.
-if [[ -f $ZSAGENT_HOME/config.zsh ]] && (( 8#$(zstat -o +mode $ZSAGENT_HOME/config.zsh) & 8#077 )); then
-  print -r -- "zsagent: other users can read $ZSAGENT_HOME/config.zsh, which holds API keys; chmod 600 it" >&2
-fi
-zmodload -F zsh/system b:zsystem  # zsystem flock for the session locks
 
 ZSAGENT_TOOLS='[{"type": "function", "name": "shell",
   "description": "Run a command in the interactive zsh of the user. Same session: cd, exports and variable assignments persist. The command runs inside a function: declare variables that must persist with typeset -g. Returns exit code and combined output.",
@@ -226,12 +244,14 @@ _zsagent_request() {
       -d @-
 }
 
-# zsagent [--profile [name] | --sessions | --resume <id> | --new | --clear | --version | --help | [--] <text>]
+# zsagent [--profile [name] | --sessions | --resume <id> | --new | --clear | --reload | --version | --help | [--] <text>]
 # Options are long (--name) only: any other argument is message text, so no -h or -? (a message may start with -).
 # Without option: send the arguments as the next user message; loop until the model answers without tool calls.
 # Locals carry the _zs_ prefix: the model's commands are eval'd below and see this function's variables.
 zsagent() {
+  _zsagent_reload_if_changed
   case $1 in
+    --reload) _zsagent_load_config; print -r -- "read $ZSAGENT_HOME/config.zsh"; return ;;
     --profile) shift; _zsagent_cmd_profile "$@"; return ;;
     --sessions) _zsagent_cmd_sessions; return ;;
     --resume) shift; _zsagent_cmd_resume "$@"; return ;;
@@ -239,13 +259,14 @@ zsagent() {
     --clear) _zsagent_cmd_clear; return ;;
     --version) print -r -- "zsagent $ZSAGENT_VERSION"; return ;;
     --help)  # usage summary
-      print -r -- "usage: zsagent [--profile [name] | --sessions | --resume <id> | --new | --clear | --version | --help | [--] <text>]
+      print -r -- "usage: zsagent [--profile [name] | --sessions | --resume <id> | --new | --clear | --reload | --version | --help | [--] <text>]
   <text>            send <text> as the next message
   --profile [name]  list the LLM profiles, or switch to one (new session)
   --sessions        list the sessions
   --resume <id>     switch to a session from the next message on
   --new             start a new session
   --clear           delete the history of the current session
+  --reload          read config.zsh again (zsagent also does it by itself when the file changed)
   --version         print the version
   --help            print this summary"
       return ;;

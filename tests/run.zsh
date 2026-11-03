@@ -474,6 +474,30 @@ test_no_text_sends_nothing() {
   [[ ! -e $(session) ]] || fail "session file created"
 }
 
+test_changed_config_read_before_turn() {
+  mock_text 1 ok
+  (umask 077; print -r -- "ZSAGENT_PROFILES='{\"mock\": {\"provider\": \"custom\", \"url\": \"http://new.invalid\", \
+\"key\": \"new-secret-key\", \"model\": \"m2\"}}'" > $ZSAGENT_HOME/config.zsh)
+  turn hi
+  assert_eq $STATUS 0 status
+  assert_eq "$(jq -r .model $MOCK/req.1)" m2 "model from the changed config"
+  assert_match "$(<$MOCK/args.1)" '*http://new.invalid*' "url from the changed config"
+}
+
+test_unchanged_config_not_read_again() {
+  ZSAGENT_OUTPUT_LIMIT=7
+  mock_text 1 ok
+  turn hi
+  assert_eq $ZSAGENT_OUTPUT_LIMIT 7 "setting made in the shell"
+}
+
+test_reload_option() {
+  ZSAGENT_OUTPUT_LIMIT=7
+  zsagent --reload > $T/out
+  assert_eq $ZSAGENT_OUTPUT_LIMIT 30000 "default after --reload"
+  assert_match "$(<$T/out)" '*read*config.zsh*' message
+}
+
 test_prompt_roundtrip() {
   zle() { : }
   PS1='user %# '
