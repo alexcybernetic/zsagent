@@ -19,6 +19,7 @@ ZSAGENT_MESSAGE_PS1='👾 %# '  # message mode: replaces PS1, so the mode is vis
 zmodload zsh/datetime  # $EPOCHREALTIME, $EPOCHSECONDS and strftime
 # A new session id: a UUID from uuidgen (macOS) or the kernel (Linux).
 _zsagent_new_id() {
+  emulate -L zsh
   REPLY=${(L)$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)}
 }
 # One session and one profile per shell; both survive sourcing the plugin again.
@@ -34,6 +35,7 @@ ZSAGENT_TOOLS='[{"type": "function", "name": "shell",
 # provider, url, key, model, options. Only the API URL of openai is fixed here; everything else
 # comes from the profile. Status 1 with a message if the profile cannot be used.
 _zsagent_config() {
+  emulate -L zsh
   local -a f
   [[ -n $ZSAGENT_PROFILES ]] || { _zsagent_fail "no profile configured; see config.zsh.example"; return 1 }
   jq -e 'type == "object" and length > 0' <<< $ZSAGENT_PROFILES > /dev/null 2>&1 ||
@@ -55,17 +57,20 @@ _zsagent_config() {
 
 # Session file of this shell in REPLY: <id>.<profile>.json.
 _zsagent_session_file() {
+  emulate -L zsh
   REPLY=$ZSAGENT_HOME/sessions/$ZSAGENT_SESSION.$_zsagent_profile.json
 }
 
 # Id and profile of session file $1 in reply=(id profile); the id has no dots, the profile name may.
 _zsagent_session_name() {
+  emulate -L zsh
   local name=${1:t:r}
   reply=(${name%%.*} ${name#*.})
 }
 
 # System facts for the system prompt: kernel and architecture, OS release (macOS or Linux), zsh version.
 _zsagent_sysinfo() {
+  emulate -L zsh
   uname -srm
   if (( $+commands[sw_vers] )); then
     print -r -- "$(sw_vers -productName) $(sw_vers -productVersion)"
@@ -78,11 +83,13 @@ _zsagent_sysinfo() {
 # Append JSON values (from stdin) to the array in session file $1. The temp file is private (mode 600) and has a
 # unique name; the session file is replaced atomically, and a failed write leaves it untouched (status 1).
 _zsagent_add() {
+  emulate -L zsh
   (umask 077; jq -s '.[0] + .[1:]' $1 - > $1.tmp.$$) && mv $1.tmp.$$ $1 || { rm -f $1.tmp.$$; return 1 }
 }
 
 # Give tool calls without output (e.g. after Ctrl+C) an output, so the history stays valid for the API.
 _zsagent_close_calls() {
+  emulate -L zsh
   (umask 077; jq '[.[] | select(.type == "function_call_output") | .call_id] as $done
       | . + [.[] | select(.type == "function_call" and (.call_id | IN($done[]) | not))
              | {type: "function_call_output", call_id, output: "Interrupted by the user."}]' $1 > $1.tmp.$$) &&
@@ -91,6 +98,7 @@ _zsagent_close_calls() {
 
 # Make the sessions directory (700) and an existing session file (600) private; status 1 if that is not possible.
 _zsagent_private() {
+  emulate -L zsh
   mkdir -p ${1:h} && chmod 700 ${1:h} || return 1
   [[ ! -e $1 ]] || chmod 600 $1
 }
@@ -98,6 +106,7 @@ _zsagent_private() {
 # Take the lock of session file $1 for a whole turn: an atomic mkdir holding the owner's process id.
 # A lock whose owner no longer runs is taken over; status 1 if another shell is using the session.
 _zsagent_lock() {
+  emulate -L zsh
   local lock=$1.lock owner
   if ! mkdir $lock 2>/dev/null; then
     owner=$(cat $lock/pid 2>/dev/null)
@@ -112,6 +121,7 @@ _zsagent_lock() {
 # Definitions the user already has are saved in _zsagent_saved and restored by _zsagent_unshadow.
 typeset -gA _zsagent_saved
 _zsagent_shadow() {
+  emulate -L zsh
   local name
   for name in exit logout; do
     (( $+functions[$name] )) && _zsagent_saved[$name]=$functions[$name]
@@ -128,6 +138,7 @@ _zsagent_shadow() {
 
 # Remove the shadows and restore earlier definitions; does nothing if no shadows are installed.
 _zsagent_unshadow() {
+  emulate -L zsh
   (( _zsagent_shadowed )) || return 0
   local name
   for name in exit logout; do
@@ -143,19 +154,21 @@ _zsagent_unshadow() {
 
 # Show the growth of file $1 live, as a disowned background process without job messages; its id is left in REPLY.
 _zsagent_tail() {
-  setopt localoptions nomonitor
+  emulate -L zsh -o nomonitor
   tail -n +1 -f $1 &!
   REPLY=$!
 }
 
 # Print an error for a failed turn.
 _zsagent_fail() {
+  emulate -L zsh
   print -r -- "zsagent: $1" >&2
 }
 
 # POST the session history (with tools and the provider's options) to a Responses API; print the event stream.
 # The key header is read from a process substitution, so it never appears in curl's arguments (ps).
 _zsagent_request() {
+  emulate -L zsh
   jq -n --arg model $_zs_cfg[model] --slurpfile input $1 --argjson tools $ZSAGENT_TOOLS --argjson options $_zs_cfg[options] \
     '{model: $model, input: $input[0], tools: $tools, stream: true} + $options' |
     curl -sSN $_zs_cfg[url] \
@@ -200,11 +213,11 @@ zsagent() {
   _zs_session=$REPLY
 
   # Private session storage and the session lock come first; without them the turn does not start.
-  if ! _zsagent_private $_zs_session; then
+  if ! _zsagent_private "$_zs_session"; then
     _zsagent_fail "cannot make ${_zs_session:h} private (mode 700)"
     return 1
   fi
-  if ! _zsagent_lock $_zs_session; then
+  if ! _zsagent_lock "$_zs_session"; then
     _zsagent_fail "session ${ZSAGENT_SESSION[1,8]} is in use by another shell"
     return 1
   fi
@@ -218,21 +231,21 @@ zsagent() {
       (umask 077; jq -n --arg s "${ZSAGENT_SYSTEM:-$_zsagent_system
 
 System information (captured at session start):
-$(_zsagent_sysinfo)}" '[{role: "system", content: $s}]' > $_zs_session) ||
+$(_zsagent_sysinfo)}" '[{role: "system", content: $s}]' >| "$_zs_session") ||
         { _zsagent_fail "cannot create $_zs_session"; return 1 }
     fi
     # Every write to the history is checked: nothing is sent or run on top of a history that was not saved.
-    _zsagent_close_calls $_zs_session || { _zsagent_fail "cannot write $_zs_session"; return 1 }
+    _zsagent_close_calls "$_zs_session" || { _zsagent_fail "cannot write $_zs_session"; return 1 }
     # Prefix time and working directory; both can change during a session.
     strftime -s _zs_now '%Y-%m-%dT%H:%M:%S%z' $EPOCHSECONDS
-    jq -n --arg q "[$_zs_now · $PWD] $*" '{role: "user", content: $q}' | _zsagent_add $_zs_session ||
+    jq -n --arg q "[$_zs_now · $PWD] $*" '{role: "user", content: $q}' | _zsagent_add "$_zs_session" ||
       { _zsagent_fail "cannot save the message in $_zs_session; nothing was sent"; return 1 }
 
     while true; do
       # Stream: show reasoning (grey; OpenAI sends a summary, local servers the reasoning text) and the answer
       # as they arrive; keep the raw stream in $_zs_raw. The filter keeps two facts between events: whether the
       # current message has shown text yet (leading whitespace is dropped) and whether the output ends a line.
-      _zsagent_request $_zs_session | tee $_zs_raw | jq --unbuffered -nRj '
+      _zsagent_request "$_zs_session" | tee "$_zs_raw" | jq --unbuffered -nRj '
         foreach (inputs | select(startswith("data: ")) | .[6:] | fromjson) as $e ({text: false, eol: true, out: ""};
           if $e.type == "response.output_item.added" then .text = false | .out = ""
           elif $e.type == "response.reasoning_summary_text.delta" or $e.type == "response.reasoning_text.delta" then
@@ -247,59 +260,59 @@ $(_zsagent_sysinfo)}" '[{role: "system", content: $s}]' > $_zs_session) ||
 
       # The complete response is in the response.completed event.
       _zs_response=$(jq -Rc 'select(startswith("data: ")) | .[6:] | fromjson
-                             | select(.type == "response.completed") | .response' $_zs_raw)
+                             | select(.type == "response.completed") | .response' "$_zs_raw")
       if [[ -z $_zs_response ]]; then
         # No completed response: the API's message from a plain JSON error body or from a stream event, else a generic one.
-        _zs_error=$(jq -r '.error.message // empty' $_zs_raw 2>/dev/null)
+        _zs_error=$(jq -r '.error.message // empty' "$_zs_raw" 2>/dev/null)
         [[ -z $_zs_error ]] && _zs_error=$(jq -Rr 'select(startswith("data: ")) | .[6:] | fromjson
           | .response.error.message // .error.message // .message
-            // (.response.incomplete_details.reason | select(.) | "incomplete: " + .) // empty' $_zs_raw 2>/dev/null | head -1)
+            // (.response.incomplete_details.reason | select(.) | "incomplete: " + .) // empty' "$_zs_raw" 2>/dev/null | head -1)
         _zsagent_fail "${_zs_error:-no response from the API}"
         return 1
       fi
-      (( _zs_in += $(jq .usage.input_tokens <<< $_zs_response) ))
-      (( _zs_outtok += $(jq .usage.output_tokens <<< $_zs_response) ))
+      (( _zs_in += $(jq .usage.input_tokens <<< "$_zs_response") ))
+      (( _zs_outtok += $(jq .usage.output_tokens <<< "$_zs_response") ))
 
       # Store the output items without null fields. If that fails, no tool call of this response is run.
-      jq '.output[] | del(.. | nulls)' <<< $_zs_response | _zsagent_add $_zs_session ||
+      jq '.output[] | del(.. | nulls)' <<< "$_zs_response" | _zsagent_add "$_zs_session" ||
         { _zsagent_fail "cannot save the response in $_zs_session; no command was run"; return 1 }
 
       # No tool calls: the model is done; print the footer.
-      _zs_calls=$(jq -c '.output[] | select(.type == "function_call")' <<< $_zs_response)
+      _zs_calls=$(jq -c '.output[] | select(.type == "function_call")' <<< "$_zs_response")
       if [[ -z $_zs_calls ]]; then
-        printf '\e[90m%.1fs · %d in · %d out\e[0m\n' $(( EPOCHREALTIME - _zs_start )) $_zs_in $_zs_outtok
+        printf '\e[90m%.1fs · %d in · %d out\e[0m\n' $(( EPOCHREALTIME - _zs_start )) "$_zs_in" "$_zs_outtok"
         return 0
       fi
 
       # Run each call in this shell. Output goes to the file $_zs_out (for the model) and is shown live by a tail
       # process; no pipe is involved, so a background process started by the command cannot block the turn.
-      for _zs_call in ${(f)_zs_calls}; do
-        _zs_cmd=$(jq -r '.arguments | fromjson | .command' <<< $_zs_call)
+      for _zs_call in "${(@f)_zs_calls}"; do
+        _zs_cmd=$(jq -r '.arguments | fromjson | .command' <<< "$_zs_call")
         print -r -- $'\e[90m'"▸ $_zs_cmd"$'\e[0m'
-        : > $_zs_out
-        _zsagent_tail $_zs_out
+        : >| "$_zs_out"
+        _zsagent_tail "$_zs_out"
         _zs_tail=$REPLY
         _zsagent_shadow
         # The anonymous function keeps a `return` in the command from leaving zsagent.
-        () { eval $_zs_cmd } > $_zs_out 2>&1
+        () { eval "$_zs_cmd" } >| "$_zs_out" 2>&1
         _zs_code=$?
         _zsagent_unshadow
         sleep 0.1  # let tail show the last output
-        kill $_zs_tail 2>/dev/null
+        kill "$_zs_tail" 2>/dev/null
         _zs_tail=
         # If the result cannot be saved, stop: a further request would make the model repeat the command.
-        jq -n --arg id "$(jq -r .call_id <<< $_zs_call)" --arg code $_zs_code --rawfile output $_zs_out \
+        jq -n --arg id "$(jq -r .call_id <<< "$_zs_call")" --arg code "$_zs_code" --rawfile output "$_zs_out" \
           '{type: "function_call_output", call_id: $id, output: ("exit code " + $code + "\n" + $output)}' |
-          _zsagent_add $_zs_session ||
+          _zsagent_add "$_zs_session" ||
           { _zsagent_fail "cannot save the command result in $_zs_session; stopping"; return 1 }
       done
     done
   } always {
     # Also after errors and Ctrl+C: stop the live display, restore exit/logout, remove temp files, release the lock.
-    [[ -n $_zs_tail ]] && kill $_zs_tail 2>/dev/null
+    [[ -n $_zs_tail ]] && kill "$_zs_tail" 2>/dev/null
     _zsagent_unshadow
-    rm -f $_zs_out $_zs_raw
-    rm -rf $_zs_session.lock 2>/dev/null
+    rm -f "$_zs_out" "$_zs_raw"
+    rm -rf "$_zs_session.lock" 2>/dev/null
     # Ctrl+C: say so on a line of its own (TRY_BLOCK_INTERRUPT is set when the block above was interrupted).
     (( TRY_BLOCK_INTERRUPT > 0 )) && print -r -- $'\n\e[90minterrupted\e[0m'
   }
@@ -308,6 +321,7 @@ $(_zsagent_sysinfo)}" '[{role: "system", content: $s}]' > $_zs_session) ||
 # List sessions, newest first: marker for the current one, short id, profile, last change, user messages,
 # first question.
 _zsagent_cmd_sessions() {
+  emulate -L zsh
   local f mark
   for f in $ZSAGENT_HOME/sessions/*.*.json(Nom); do
     _zsagent_session_name $f
@@ -320,6 +334,7 @@ _zsagent_cmd_sessions() {
 
 # Switch this shell to an existing session and its profile; a unique id prefix is enough.
 _zsagent_cmd_resume() {
+  emulate -L zsh
   local -a matches=($ZSAGENT_HOME/sessions/$1*.*.json(N))
   if (( $#matches != 1 )); then
     _zsagent_fail "--resume: $#matches sessions match '$1'"
@@ -332,6 +347,7 @@ _zsagent_cmd_resume() {
 
 # Switch this shell to a new session id; the profile stays, the previous session file is kept.
 _zsagent_cmd_new() {
+  emulate -L zsh
   _zsagent_new_id
   ZSAGENT_SESSION=$REPLY
   print -r -- "new session ${ZSAGENT_SESSION[1,8]} ($_zsagent_profile)"
@@ -340,6 +356,7 @@ _zsagent_cmd_new() {
 # Delete the session file of this shell; id and profile stay, the next message starts the history anew.
 # The session lock is taken first, so a turn running in another shell is not cut off.
 _zsagent_cmd_clear() {
+  emulate -L zsh
   local -A _zs_cfg
   _zsagent_config || return 1
   _zsagent_session_file
@@ -356,6 +373,7 @@ _zsagent_cmd_clear() {
 # With a profile name: switch this shell to it and start a new session, because a session's history
 # belongs to the API it was made with.
 _zsagent_cmd_profile() {
+  emulate -L zsh
   local current=${_zsagent_profile:-$(jq -r 'keys_unsorted[0] // empty' <<< $ZSAGENT_PROFILES 2>/dev/null)}
   local mark name provider model url
   if [[ -z $1 ]]; then
@@ -379,7 +397,7 @@ _zsagent_cmd_profile() {
 # PS1 in REPLY without the zero-width OSC 133 marks that terminal integrations (Ghostty, iTerm2, kitty) wrap
 # around it, so zsagent can recognize its own message prompt and save the user's prompt without them.
 _zsagent_unmarked() {
-  setopt localoptions extendedglob
+  emulate -L zsh -o extendedglob
   REPLY=${1//\%\{$'\e']133\;[^%]#\%\}/}
 }
 
@@ -393,6 +411,7 @@ _zsagent_mode=command     # command: Enter runs the line in zsh; message: Enter 
 # Message mode: remember the user's prompt and show the message-mode one. Runs on the switch and as the last
 # precmd hook, because many themes rebuild PS1 before every prompt.
 _zsagent_prompt() {
+  emulate -L zsh
   [[ $_zsagent_mode == message && -n $ZSAGENT_MESSAGE_PS1 ]] || return 0
   _zsagent_unmarked $PS1
   [[ $REPLY == $_zsagent_shown ]] || _zsagent_ps1=$REPLY  # not the message prompt: it is the user's prompt
@@ -402,6 +421,7 @@ _zsagent_prompt() {
 
 # Shift+Tab: switch between command and message mode; swap the prompt string and redraw the line.
 _zsagent_toggle() {
+  emulate -L zsh
   if [[ $_zsagent_mode == message ]]; then
     _zsagent_mode=command
     _zsagent_unmarked $PS1
@@ -416,6 +436,7 @@ _zsagent_toggle() {
 # Enter: in message mode, save the line for _zsagent_run and in the history, then submit an empty line (which
 # creates no history entry); in command mode zsh runs the line as usual.
 _zsagent_accept_line() {
+  emulate -L zsh
   if [[ $_zsagent_mode == message && -n $BUFFER ]]; then
     _zsagent_pending=$BUFFER
     # HIST_IGNORE_SPACE: a message typed with a leading space stays out of the history, like a command would.

@@ -50,7 +50,7 @@ assert_no_match() { [[ $1 != $~2 ]] || fail "${3:-value}: [${(V)1}] matches [$2]
 
 # The session file of this shell, and a jq query on it.
 session() { print -r -- $ZSAGENT_HOME/sessions/$ZSAGENT_SESSION.mock.json }
-sq() { jq -r $1 $(session) }
+sq() { jq -r "$1" "$(session)" }
 
 # Run a turn; output (stdout and stderr) in $OUT, status in $STATUS. Not in a subshell: tool commands change it.
 turn() {
@@ -194,6 +194,25 @@ test_failed_save_runs_no_command() {
   turn go
   assert_eq $STATUS 1 status
   [[ ! -e $T/ran ]] || fail "command ran although the response was not saved"
+}
+
+test_user_options_noclobber() {
+  setopt noclobber
+  mock_calls 1 'echo first' 'echo second'
+  mock_text 2 done
+  turn go
+  assert_eq $STATUS 0 status
+  assert_eq "$(sq '[.[] | select(.type == "function_call_output") | .output] | join("|")')" \
+    $'exit code 0\nfirst\n|exit code 0\nsecond' "tool outputs"
+}
+
+test_user_options_ksharrays_shwordsplit() {
+  setopt ksharrays shwordsplit
+  mock_calls 1 'echo "a  b"'
+  mock_text 2 done
+  turn go
+  assert_eq $STATUS 0 status
+  assert_eq "$(sq '.[] | select(.type == "function_call_output") | .output')" $'exit code 0\na  b' "tool output"
 }
 
 test_prompt_roundtrip() {
