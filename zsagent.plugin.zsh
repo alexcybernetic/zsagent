@@ -26,6 +26,7 @@ _zsagent_new_id() {
 [[ -n $ZSAGENT_SESSION ]] || { _zsagent_new_id; ZSAGENT_SESSION=$REPLY }
 _zsagent_profile=${_zsagent_profile:-$ZSAGENT_PROFILE}
 zmodload -F zsh/stat b:zstat  # zstat for file times (without replacing the stat command)
+zmodload -F zsh/system b:zsystem  # zsystem flock for the session locks
 
 ZSAGENT_TOOLS='[{"type": "function", "name": "shell",
   "description": "Run a command in the interactive zsh of the user. Same session: cd, exports and variable assignments persist. The command runs inside a function: declare variables that must persist with typeset -g. Returns exit code and combined output.",
@@ -103,17 +104,28 @@ _zsagent_private() {
   [[ ! -e $1 ]] || chmod 600 $1
 }
 
-# Take the lock of session file $1 for a whole turn: an atomic mkdir holding the owner's process id.
-# A lock whose owner no longer runs is taken over; status 1 if another shell is using the session.
+# Take the lock of session file $1 for a whole turn: an fcntl lock (zsystem flock) on <id>.<profile>.lock.
+# The kernel releases it when the shell ends, so a lock is never stale. A process may lock a file twice, so
+# _zsagent_locks (lock file -> descriptor) refuses a second turn of this shell, e.g. zsagent run by a tool call.
+# Status 1 if another shell or a running turn of this shell holds the lock. The lock file is never deleted:
+# deleting it would let a shell that opened the old file lock it together with one that created a new file.
+typeset -gA _zsagent_locks
 _zsagent_lock() {
   emulate -L zsh
-  local lock=$1.lock owner
-  if ! mkdir $lock 2>/dev/null; then
-    owner=$(cat $lock/pid 2>/dev/null)
-    [[ -n $owner ]] && kill -0 $owner 2>/dev/null && return 1
-    rm -rf $lock && mkdir $lock 2>/dev/null || return 1
-  fi
-  print -r -- $$ > $lock/pid
+  local lock=${1%.json}.lock fd
+  (( ! $+_zsagent_locks[$lock] )) || return 1
+  [[ -e $lock ]] || (umask 077; : >> $lock) || return 1
+  zsystem flock -t 0 -f fd $lock 2>/dev/null || return 1
+  _zsagent_locks[$lock]=$fd
+}
+
+# Release the lock of session file $1, if this shell holds it.
+_zsagent_unlock() {
+  emulate -L zsh
+  local lock=${1%.json}.lock
+  (( $+_zsagent_locks[$lock] )) || return 0
+  zsystem flock -u $_zsagent_locks[$lock]
+  unset "_zsagent_locks[$lock]"
 }
 
 # Shadow exit and logout while a tool command runs (they would close the user's terminal).
@@ -218,7 +230,7 @@ zsagent() {
     return 1
   fi
   if ! _zsagent_lock "$_zs_session"; then
-    _zsagent_fail "session ${ZSAGENT_SESSION[1,8]} is in use by another shell"
+    _zsagent_fail "session ${ZSAGENT_SESSION[1,8]} is in use by another shell or a running turn"
     return 1
   fi
 
@@ -247,7 +259,7 @@ $(_zsagent_sysinfo)}" '[{role: "system", content: $s}]' >| "$_zs_session") ||
     [[ -n $_zs_tail ]] && kill "$_zs_tail" 2>/dev/null
     _zsagent_unshadow
     rm -f "$_zs_out" "$_zs_raw"
-    rm -rf "$_zs_session.lock" 2>/dev/null
+    _zsagent_unlock "$_zs_session"
     # Ctrl+C: say so on a line of its own (TRY_BLOCK_INTERRUPT is set when the block above was interrupted).
     (( TRY_BLOCK_INTERRUPT > 0 )) && print -r -- $'\n\e[90minterrupted\e[0m'
   }
@@ -418,11 +430,11 @@ _zsagent_cmd_clear() {
   _zsagent_config || return 1
   _zsagent_session_file
   if ! _zsagent_lock $REPLY; then
-    _zsagent_fail "--clear: session ${ZSAGENT_SESSION[1,8]} is in use by another shell"
+    _zsagent_fail "--clear: session ${ZSAGENT_SESSION[1,8]} is in use"
     return 1
   fi
   rm -f $REPLY
-  rm -rf $REPLY.lock
+  _zsagent_unlock $REPLY
   print -r -- "cleared session ${ZSAGENT_SESSION[1,8]} ($_zsagent_profile)"
 }
 

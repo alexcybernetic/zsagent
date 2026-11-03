@@ -142,31 +142,75 @@ test_user_exit_function_restored() {
   assert_eq "$functions[exit]" "$before" "user's exit"
 }
 
+# The lock file of the session, and whether another process can take its lock now.
+lockfile() { print -r -- ${$(session)%.json}.lock }
+can_lock() { zsh -fc 'zmodload zsh/system; zsystem flock -t 0 -f fd $1' x $(lockfile) 2>/dev/null }
+
+# Hold the session lock from another process until it is killed; its process id in REPLY.
+hold_lock() {
+  mkdir -p ${$(session):h}; : >> $(lockfile)
+  zsh -fc 'zmodload zsh/system; zsystem flock -f fd $1 && touch $1.held && sleep 30' x $(lockfile) &!
+  REPLY=$!
+  while [[ ! -e $(lockfile).held ]]; do sleep 0.05; done
+}
+
 test_lock_busy() {
   mock_text 1 ok
-  sleep 30 &!
-  local pid=$!
-  mkdir -p $(session).lock && print -r -- $pid > $(session).lock/pid
+  hold_lock
   turn hi
-  kill $pid
+  kill $REPLY
   assert_eq $STATUS 1 status
   assert_match $OUT '*in use by another shell*' error
   assert_eq "$(print $MOCK/req.*(N))" "" "no request"
 }
 
-test_lock_stale_taken_over_and_released() {
+test_lock_freed_when_holder_dies() {
   mock_text 1 ok
-  zsh -fc 'print $$' > $T/deadpid
-  mkdir -p $(session).lock && cp $T/deadpid $(session).lock/pid
+  hold_lock
+  kill $REPLY
+  sleep 0.2
   turn hi
   assert_eq $STATUS 0 status
-  [[ ! -e $(session).lock ]] || fail "lock not released"
+  can_lock || fail "lock still held after the turn"
 }
 
 test_lock_released_after_error() {
   turn hi   # no response prepared
   assert_eq $STATUS 1 status
-  [[ ! -e $(session).lock ]] || fail "lock not released"
+  can_lock || fail "lock still held after a failed turn"
+}
+
+test_lock_held_during_turn_nested_refused() {
+  mock_calls 1 "zsh -fc 'zmodload zsh/system; zsystem flock -t 0 -f fd \$1' x $(lockfile) && print free || print held" \
+    'zsagent nested' 'zsagent --clear'
+  mock_text 2 done
+  turn go
+  assert_eq $STATUS 0 status
+  local -a outs=("${(@f)$(sq '.[] | select(.type == "function_call_output") | .output | @json')}")
+  assert_match $outs[1] '*held*' "lock held by the turn"
+  assert_match $outs[2] '*in use*' "nested turn"
+  assert_match $outs[3] '*in use*' "--clear during the turn"
+  [[ -f $(session) ]] || fail "session file removed"
+  mock_text 3 again
+  turn again
+  assert_eq $STATUS 0 status "next turn"
+}
+
+test_concurrent_turn_from_another_shell() {
+  export ZSAGENT_HOME ZSAGENT_SESSION
+  mock_calls 1 "zsh -fc 'source $ROOT/zsagent.plugin.zsh; zsagent second' 2>&1"
+  mock_text 2 done
+  turn first
+  assert_match "$(sq '.[] | select(.type == "function_call_output") | .output')" '*in use by another shell*' "second shell"
+  assert_eq "$(sq '[.[] | select(.role == "user")] | length')" 1 "user messages"
+}
+
+test_clear() {
+  mock_text 1 ok
+  turn hi
+  zsagent --clear > /dev/null
+  [[ ! -e $(session) ]] || fail "session file still there"
+  can_lock || fail "lock still held"
 }
 
 test_no_completed_response_runs_nothing() {
