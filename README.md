@@ -183,6 +183,15 @@ Load another copy of zsagent into the current shell, e.g. a working copy, with i
    source ./zsagent.plugin.zsh
    ```
 
+## Tests
+
+```zsh
+zsh -f tests/run.zsh            # all tests
+zsh -f tests/run.zsh test_name  # selected tests
+```
+
+Each test runs in a new `zsh -f` with its own `ZSAGENT_HOME`. A `curl` function replaces the API: it records each request and replays a prepared event stream, so the tests need no network and no key.
+
 ## License
 
 [MIT](LICENSE)
