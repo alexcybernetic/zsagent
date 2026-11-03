@@ -148,7 +148,7 @@ Downloads, with 11 GB.
 
 | Command | What it does |
 |---|---|
-| `zsagent <text>` | Sends the arguments, joined with spaces, as a user message |
+| `zsagent <text>` | Sends the arguments, joined with spaces, as a user message; without text (or only blanks) it fails and sends nothing |
 | `zsagent -- <text>` | The same, for text that starts with `--` |
 | `zsagent --profile` | Lists the profiles: name, provider, model, url |
 | `zsagent --profile <name>` | Sets the shell's profile and a new session id |

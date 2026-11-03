@@ -463,6 +463,17 @@ test_config_readable_by_others_warns() {
   assert_eq "$warn" "" "no warning for mode 600"
 }
 
+test_no_text_sends_nothing() {
+  local args
+  for args in "" "--" "-- " "' '"; do
+    eval "turn $args"
+    assert_eq $STATUS 1 "status for [$args]"
+    assert_match $OUT '*no message text*' "error for [$args]"
+  done
+  assert_eq "$(print $MOCK/req.*(N))" "" "no request"
+  [[ ! -e $(session) ]] || fail "session file created"
+}
+
 test_prompt_roundtrip() {
   zle() { : }
   PS1='user %# '

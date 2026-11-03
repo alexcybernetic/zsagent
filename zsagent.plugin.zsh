@@ -252,6 +252,8 @@ zsagent() {
     --) shift ;;  # the rest is message text, even if it starts with --
     --*) _zsagent_fail "unknown option '$1'"; return 1 ;;
   esac
+  # No text (or only blanks): nothing to send, so no request is made.
+  [[ $* == *[^[:space:]]* ]] || { _zsagent_fail "no message text (zsagent --help lists the options)"; return 1 }
   local _zs_session _zs_out _zs_raw _zs_tail
   local _zs_now _zs_response _zs_calls _zs_call _zs_id _zs_cmd _zs_code _zs_running
   local -F _zs_start=$EPOCHREALTIME
