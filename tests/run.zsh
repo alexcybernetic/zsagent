@@ -8,14 +8,16 @@ ROOT=${0:A:h:h}
 # ---- mock API -------------------------------------------------------------------------------------------------
 
 # curl: request N (counted by files, because curl runs in a pipeline subshell) saves its body to $MOCK/req.N,
-# its arguments to $MOCK/args.N and prints $MOCK/resp.N.
+# its arguments to $MOCK/args.N and prints $MOCK/resp.N; if $MOCK/fail.N exists, it fails like curl with status 7.
 curl() {
   local -a reqs=($MOCK/req.*(N))
   local n=$(( $#reqs + 1 ))
   print -rl -- "$@" > $MOCK/args.$n
   cat > $MOCK/req.$n
   [[ -f $MOCK/resp.$n ]] && cat $MOCK/resp.$n
-  return 0
+  [[ -f $MOCK/fail.$n ]] || return 0
+  print -ru2 -- "curl: (7) Failed to connect"
+  return 7
 }
 
 # Events (JSON, one per line on stdin) as an event stream into response N.
@@ -268,6 +270,59 @@ test_call_without_id_stops() {
   assert_eq $STATUS 1 status
   assert_match $OUT '*without call_id*' error
   [[ ! -e $T/ran ]] || fail "the call ran"
+}
+
+test_stream_with_junk_and_done_lines() {
+  { print -r -- 'data: {"type":"response.output_text.delta","delta":"hel"}'
+    print -r -- 'data: not json'
+    print -r -- 'data: {"type":"response.output_text.delta","delta":"lo"}'
+    jq -nc '{type: "response.completed", response: {output: [{type: "message", role: "assistant",
+      content: [{type: "output_text", text: "hello"}]}], usage: {input_tokens: 1, output_tokens: 1}}}' | sed 's/^/data: /'
+    print -r -- 'data: [DONE]' } > $MOCK/resp.1
+  turn hi
+  assert_eq $STATUS 0 status
+  assert_match $OUT 'hello*' output
+  assert_no_match $OUT '*jq: error*' "jq errors"
+}
+
+test_non_json_error_body() {
+  mock_raw 1 '<html><body>502 Bad Gateway</body></html>'
+  turn hi
+  assert_eq $STATUS 1 status
+  assert_match $OUT '*zsagent: no completed response from the API: <html><body>502 Bad Gateway*' error
+}
+
+test_string_error_body() {
+  mock_raw 1 '{"error": "model not found"}'
+  turn hi
+  assert_match $OUT '*zsagent: model not found*' error
+}
+
+test_curl_failure() {
+  touch $MOCK/fail.1
+  turn hi
+  assert_eq $STATUS 1 status
+  assert_match $OUT '*zsagent: request failed \(curl exit status 7\)*' error
+}
+
+test_output_not_array_saves_nothing() {
+  jq -nc '{type: "response.completed", response: {output: {type: "function_call", call_id: "x", name: "shell",
+    arguments: "{\"command\": \"touch ran\"}"}}}' | _sse 1
+  cd $T
+  turn hi
+  assert_eq $STATUS 1 status
+  assert_match $OUT '*malformed response*' error
+  assert_eq "$(sq 'length')" 2 "items (system, user)"
+  [[ ! -e $T/ran ]] || fail "command ran"
+}
+
+test_missing_usage_counts_zero() {
+  null=5
+  jq -nc '{type: "response.completed", response: {output: [{type: "message", role: "assistant",
+    content: [{type: "output_text", text: "x"}]}]}}' | _sse 1
+  turn hi
+  assert_eq $STATUS 0 status
+  assert_match $OUT '*· 0 in · 0 out*' footer
 }
 
 test_prompt_roundtrip() {

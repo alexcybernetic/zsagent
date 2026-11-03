@@ -204,7 +204,7 @@ zsagent() {
     --*) _zsagent_fail "unknown option '$1'"; return 1 ;;
   esac
   local _zs_session _zs_out _zs_raw _zs_tail
-  local _zs_now _zs_response _zs_error _zs_calls _zs_call _zs_id _zs_cmd _zs_code
+  local _zs_now _zs_response _zs_calls _zs_call _zs_id _zs_cmd _zs_code
   local -F _zs_start=$EPOCHREALTIME
   local -i _zs_in=0 _zs_outtok=0
   local -A _zs_cfg
@@ -253,6 +253,23 @@ $(_zsagent_sysinfo)}" '[{role: "system", content: $s}]' >| "$_zs_session") ||
   }
 }
 
+# Print the error of a request without a completed response; $1: the raw response, $2: curl's exit status.
+# The message comes from a JSON error body, a stream event or curl; else the start of the body is shown.
+_zsagent_api_error() {
+  emulate -L zsh
+  local msg
+  msg=$(jq -r '(.error | if type == "string" then . else .message? end) // empty' $1 2>/dev/null)
+  [[ -n $msg ]] || msg=$(jq -nRr 'first(inputs | select(startswith("data: ")) | .[6:] | fromjson? // empty
+    | .response.error.message // .error.message // .message
+      // (.response.incomplete_details.reason | select(.) | "incomplete: " + .) // empty)' $1 2>/dev/null)
+  if [[ -z $msg && $2 != 0 ]]; then
+    msg="request failed (curl exit status $2)"
+  elif [[ -z $msg && -s $1 ]]; then
+    msg="no completed response from the API: $(head -c 300 $1 | tr -s '\n\t ' ' ')"
+  fi
+  _zsagent_fail "${msg:-no response from the API}"
+}
+
 # The rounds of a turn: send the history, show and save the response, run its tool calls, repeat until a response
 # has no tool call. Recursion instead of loops, here and in _zsagent_calls: a `break` or `continue` in a model
 # command finds no loop of zsagent to leave. Runs inside zsagent and uses its _zs_ variables.
@@ -261,7 +278,7 @@ _zsagent_rounds() {
   # as they arrive; keep the raw stream in $_zs_raw. The filter keeps two facts between events: whether the
   # current message has shown text yet (leading whitespace is dropped) and whether the output ends a line.
   _zsagent_request "$_zs_session" | tee "$_zs_raw" | jq --unbuffered -nRj '
-    foreach (inputs | select(startswith("data: ")) | .[6:] | fromjson) as $e ({text: false, eol: true, out: ""};
+    foreach (inputs | select(startswith("data: ")) | .[6:] | fromjson? // empty) as $e ({text: false, eol: true, out: ""};
       if $e.type == "response.output_item.added" then .text = false | .out = ""
       elif $e.type == "response.reasoning_summary_text.delta" or $e.type == "response.reasoning_text.delta" then
         .out = "\u001b[90m" + $e.delta + "\u001b[0m" | .eol = ($e.delta | endswith("\n"))
@@ -272,21 +289,23 @@ _zsagent_rounds() {
         .out = (if .eol then "" else "\n" end) | .eol = true
       else .out = "" end;
       .out | select(. != ""))'
+  local _zs_curl=${pipestatus:0:1} _zs_usage  # curl's exit status; :0:1 is the first element with any options
 
-  # The complete response is in the response.completed event.
-  _zs_response=$(jq -Rc 'select(startswith("data: ")) | .[6:] | fromjson
-                         | select(.type == "response.completed") | .response' "$_zs_raw")
+  # The complete response is in the (last) response.completed event; lines that are not JSON are skipped.
+  _zs_response=$(jq -nRc 'last(inputs | select(startswith("data: ")) | .[6:] | fromjson? // empty
+                         | select(.type == "response.completed") | .response) // empty' "$_zs_raw")
   if [[ -z $_zs_response ]]; then
-    # No completed response: the API's message from a plain JSON error body or from a stream event, else a generic one.
-    _zs_error=$(jq -r '.error.message // empty' "$_zs_raw" 2>/dev/null)
-    [[ -z $_zs_error ]] && _zs_error=$(jq -Rr 'select(startswith("data: ")) | .[6:] | fromjson
-      | .response.error.message // .error.message // .message
-        // (.response.incomplete_details.reason | select(.) | "incomplete: " + .) // empty' "$_zs_raw" 2>/dev/null | head -1)
-    _zsagent_fail "${_zs_error:-no response from the API}"
+    _zsagent_api_error "$_zs_raw" "$_zs_curl"
     return 1
   fi
-  (( _zs_in += $(jq .usage.input_tokens <<< "$_zs_response") ))
-  (( _zs_outtok += $(jq .usage.output_tokens <<< "$_zs_response") ))
+  # Nothing of a response without an output array is saved or run.
+  if ! jq -e '.output | type == "array"' <<< "$_zs_response" > /dev/null; then
+    _zsagent_fail "malformed response from the API (no output array); nothing was saved or run"
+    return 1
+  fi
+  _zs_usage=$(jq -r '[(.usage.input_tokens | numbers) // 0, (.usage.output_tokens | numbers) // 0] | join(" ")' \
+    <<< "$_zs_response")
+  (( _zs_in += ${_zs_usage%% *}, _zs_outtok += ${_zs_usage##* } ))
 
   # Store the output items without null fields. If that fails, no tool call of this response is run.
   jq '.output[] | del(.. | nulls)' <<< "$_zs_response" | _zsagent_add "$_zs_session" ||
