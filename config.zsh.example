@@ -28,6 +28,9 @@ ZSAGENT_PROFILE=openai
 # Prompt escapes: %n user, %m host, %~ working directory, %1~ its last component, %F{color}...%f color.
 # ZSAGENT_MESSAGE_PS1='👾 %n@%m %1~: '
 
+# Style of reasoning, command lines and the footer, as an escape sequence. Default: faint ($'\e[2m').
+# ZSAGENT_DIM=$'\e[38;5;245m'
+
 # Custom system prompt for new sessions. It replaces the built-in one completely, including the appended
 # system information (OS, zsh version).
 # ZSAGENT_SYSTEM="You are a terse shell assistant. Answer in one line."

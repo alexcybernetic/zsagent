@@ -69,6 +69,7 @@ The plugin sources `$ZSAGENT_HOME/config.zsh` when it is loaded. [`config.zsh.ex
 | `ZSAGENT_PROFILE` | The profile of a new shell; empty: the first key of `ZSAGENT_PROFILES` |
 | `ZSAGENT_SYSTEM` | Replaces the built-in system prompt and the appended system information; written as first item of new sessions |
 | `ZSAGENT_MESSAGE_PS1` | Replaces `PS1` in message mode; default `👾 %# ` |
+| `ZSAGENT_DIM` | Escape sequence for reasoning, `▸` command lines and the footer; default `$'\e[2m'` (faint: the text color, dimmed), e.g. `$'\e[38;5;245m'` for grey |
 | `ZSAGENT_HOME` | Directory of `config.zsh` and `sessions/`; default `~/.zsagent`; set before `source` |
 | `ZSAGENT_OUTPUT_LIMIT` | Characters of a command's output that the model gets; of longer output it gets the start and the end and a note on what was left out; the terminal shows all of it; default `30000`, `0`: no limit |
 | `ZSAGENT_MAX_ROUNDS` | Requests per turn, `1` to `500`; then the turn stops with an error, and the next message continues; default `100` |

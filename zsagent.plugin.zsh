@@ -24,6 +24,7 @@ _zsagent_load_config() {
   ZSAGENT_PROFILE=   # profile a new shell starts with; empty: the first profile
   ZSAGENT_SYSTEM=    # replaces the complete built-in system prompt (including the system information)
   ZSAGENT_MESSAGE_PS1='👾 %# '  # message mode: replaces PS1, so the mode is visible
+  ZSAGENT_DIM=$'\e[2m'  # style of reasoning, commands and the footer: faint, i.e. the text color dimmed
   # Limits (whole numbers).
   ZSAGENT_OUTPUT_LIMIT=30000   # characters of a command's output the model gets; longer output loses its middle; 0: no limit
   ZSAGENT_MAX_ROUNDS=100       # requests per turn (1-500); then the turn stops, and a new message continues it
@@ -327,7 +328,7 @@ $(_zsagent_sysinfo)}" '[{role: "system", content: $s}]' >| "$_zs_session") ||
     [[ -n $_zs_calls ]] && _zsagent_close_calls "$_zs_session" "$_zsagent_msg_not_run"
     _zsagent_unlock "$_zs_session"
     # Ctrl+C: say so on a line of its own (TRY_BLOCK_INTERRUPT is set when the block above was interrupted).
-    (( TRY_BLOCK_INTERRUPT > 0 )) && print -r -- $'\n\e[90minterrupted\e[0m'
+    (( TRY_BLOCK_INTERRUPT > 0 )) && print -r -- $'\n'"${ZSAGENT_DIM}interrupted"$'\e[0m'
   }
 }
 
@@ -358,14 +359,14 @@ _zsagent_rounds() {
     _zsagent_fail "stopped after $ZSAGENT_MAX_ROUNDS requests in this turn (ZSAGENT_MAX_ROUNDS); a new message continues"
     return 1
   fi
-  # Stream: show reasoning (grey; OpenAI sends a summary, local servers the reasoning text) and the answer
+  # Stream: show reasoning (ZSAGENT_DIM; OpenAI sends a summary, local servers the reasoning text) and the answer
   # as they arrive; keep the raw stream in $_zs_raw. The filter keeps two facts between events: whether the
   # current message has shown text yet (leading whitespace is dropped) and whether the output ends a line.
-  _zsagent_request "$_zs_session" | tee "$_zs_raw" | jq --unbuffered -nRj '
+  _zsagent_request "$_zs_session" | tee "$_zs_raw" | jq --unbuffered -nRj --arg dim "$ZSAGENT_DIM" '
     foreach (inputs | select(startswith("data: ")) | .[6:] | fromjson? // empty) as $e ({text: false, eol: true, out: ""};
       if $e.type == "response.output_item.added" then .text = false | .out = ""
       elif $e.type == "response.reasoning_summary_text.delta" or $e.type == "response.reasoning_text.delta" then
-        .out = "\u001b[90m" + $e.delta + "\u001b[0m" | .eol = ($e.delta | endswith("\n"))
+        .out = $dim + $e.delta + "\u001b[0m" | .eol = ($e.delta | endswith("\n"))
       elif $e.type == "response.output_text.delta" then
         (if .text then $e.delta else ($e.delta | sub("^\\s+"; "")) end) as $d
         | .out = $d | .text = (.text or $d != "") | .eol = (if $d == "" then .eol else ($d | endswith("\n")) end)
@@ -398,7 +399,7 @@ _zsagent_rounds() {
   # No tool calls: the model is done; print the footer.
   _zs_calls=$(jq -c '.output[] | select(.type == "function_call")' <<< "$_zs_response")
   if [[ -z $_zs_calls ]]; then
-    printf '\e[90m%.1fs · %d in · %d out\e[0m\n' $(( EPOCHREALTIME - _zs_start )) "$_zs_in" "$_zs_outtok"
+    printf '%s%.1fs · %d in · %d out\e[0m\n' "$ZSAGENT_DIM" $(( EPOCHREALTIME - _zs_start )) "$_zs_in" "$_zs_outtok"
     return 0
   fi
 
@@ -431,7 +432,7 @@ _zsagent_calls() {
   [[ -n $_zs_id ]] || { _zsagent_fail "the API sent a tool call without call_id; stopping"; return 1 }
   if _zsagent_call_command "$_zs_call"; then
     _zs_cmd=$REPLY
-    print -r -- $'\e[90m'"▸ $_zs_cmd"$'\e[0m'
+    print -r -- "${ZSAGENT_DIM}▸ $_zs_cmd"$'\e[0m'
     : >| "$_zs_out"
     _zs_running=$_zs_id  # until its result is saved; the always block of zsagent saves it if the turn is aborted
     _zsagent_tail "$_zs_out"
@@ -446,7 +447,7 @@ _zsagent_calls() {
     _zs_tail=
   else
     # A call that cannot be run gets the reason as its output, so the model can correct it.
-    print -r -- $'\e[90m'"▸ not run: $REPLY"$'\e[0m'
+    print -r -- "${ZSAGENT_DIM}▸ not run: $REPLY"$'\e[0m'
     print -r -- "error: $REPLY; nothing was run" >| "$_zs_out"
     _zs_code=
   fi

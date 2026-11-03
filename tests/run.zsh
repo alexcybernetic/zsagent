@@ -498,6 +498,22 @@ test_reload_option() {
   assert_match "$(<$T/out)" '*read*config.zsh*' message
 }
 
+test_dim_style() {
+  { print -r -- 'data: {"type":"response.reasoning_summary_text.delta","delta":"thinking"}'
+    jq -nc '{type: "response.completed", response: {output: [{type: "message", role: "assistant",
+      content: [{type: "output_text", text: "x"}]}], usage: {input_tokens: 1, output_tokens: 1}}}' | sed 's/^/data: /'
+  } > $MOCK/resp.2
+  mock_calls 1 'true'
+  turn go
+  local e=$'\e'  # escape sequences in patterns: ESC, then \[ for a literal [
+  assert_match $OUT "*$e\\[2m▸ true*$e\\[2mthinking$e\\[0m*$e\\[2m*· 11 in · 3 out$e\\[0m*" "faint by default"
+  assert_no_match $OUT "*$e\\[90m*" "no color 90"
+  ZSAGENT_DIM=$'\e[38;5;245m'
+  mock_text 3 y
+  turn again
+  assert_match $OUT "*$e\\[38;5;245m*· 10 in · 2 out*" "own style"
+}
+
 test_prompt_roundtrip() {
   zle() { : }
   PS1='user %# '
