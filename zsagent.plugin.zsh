@@ -88,14 +88,23 @@ _zsagent_add() {
   (umask 077; jq -s '.[0] + .[1:]' $1 - > $1.tmp.$$) && mv $1.tmp.$$ $1 || { rm -f $1.tmp.$$; return 1 }
 }
 
-# Give tool calls without output (e.g. after Ctrl+C) an output, so the history stays valid for the API.
+# Give tool calls of session file $1 without output the output $2, so the history stays valid for the API:
+# with $3 only the call with that id, else all of them. A call that has an output keeps it.
 _zsagent_close_calls() {
   emulate -L zsh
-  (umask 077; jq '[.[] | select(.type == "function_call_output") | .call_id] as $done
-      | . + [.[] | select(.type == "function_call" and (.call_id | IN($done[]) | not))
-             | {type: "function_call_output", call_id, output: "Interrupted by the user."}]' $1 > $1.tmp.$$) &&
+  (umask 077; jq --arg text $2 --arg id "$3" '[.[] | select(.type == "function_call_output") | .call_id] as $done
+      | . + [.[] | select(.type == "function_call" and (.call_id | IN($done[]) | not) and ($id == "" or .call_id == $id))
+             | {type: "function_call_output", call_id, output: $text}]' $1 > $1.tmp.$$) &&
     mv $1.tmp.$$ $1 || { rm -f $1.tmp.$$; return 1 }
 }
+
+# Outputs of tool calls that a turn did not answer. They tell the model whether a command may have run, so it
+# checks its effects instead of repeating a command that already changed something.
+_zsagent_msg_aborted="interrupted: the turn was aborted while this command ran (Ctrl+C or a shell error); \
+it may have taken effect partly or fully. Check its effects before running it again. Output until then:"
+_zsagent_msg_not_run="not run: the turn was aborted (Ctrl+C or an error) before this call."
+_zsagent_msg_unknown="no result recorded: the turn ended before this call was answered (Ctrl+C, a closed terminal \
+or an error). The command may have run, partly or fully; check its effects before running it again."
 
 # Make the sessions directory (700) and an existing session file (600) private; status 1 if that is not possible.
 _zsagent_private() {
@@ -216,7 +225,7 @@ zsagent() {
     --*) _zsagent_fail "unknown option '$1'"; return 1 ;;
   esac
   local _zs_session _zs_out _zs_raw _zs_tail
-  local _zs_now _zs_response _zs_calls _zs_call _zs_id _zs_cmd _zs_code
+  local _zs_now _zs_response _zs_calls _zs_call _zs_id _zs_cmd _zs_code _zs_running
   local -F _zs_start=$EPOCHREALTIME
   local -i _zs_in=0 _zs_outtok=0
   local -A _zs_cfg
@@ -247,7 +256,7 @@ $(_zsagent_sysinfo)}" '[{role: "system", content: $s}]' >| "$_zs_session") ||
         { _zsagent_fail "cannot create $_zs_session"; return 1 }
     fi
     # Every write to the history is checked: nothing is sent or run on top of a history that was not saved.
-    _zsagent_close_calls "$_zs_session" || { _zsagent_fail "cannot write $_zs_session"; return 1 }
+    _zsagent_close_calls "$_zs_session" "$_zsagent_msg_unknown" || { _zsagent_fail "cannot write $_zs_session"; return 1 }
     # Prefix time and working directory; both can change during a session.
     strftime -s _zs_now '%Y-%m-%dT%H:%M:%S%z' $EPOCHSECONDS
     jq -n --arg q "[$_zs_now · $PWD] $*" '{role: "user", content: $q}' | _zsagent_add "$_zs_session" ||
@@ -255,10 +264,14 @@ $(_zsagent_sysinfo)}" '[{role: "system", content: $s}]' >| "$_zs_session") ||
 
     _zsagent_rounds
   } always {
-    # Also after errors and Ctrl+C: stop the live display, restore exit/logout, remove temp files, release the lock.
+    # Also after errors and Ctrl+C: stop the live display, restore exit/logout, answer the calls of the last
+    # response that have no output yet, remove temp files, release the lock.
     [[ -n $_zs_tail ]] && kill "$_zs_tail" 2>/dev/null
     _zsagent_unshadow
-    rm -f "$_zs_out" "$_zs_raw"
+    if [[ -n $_zs_running ]]; then  # aborted while a command ran: save what it printed until then
+      _zsagent_close_calls "$_zs_session" "$_zsagent_msg_aborted"$'\n'"$(<$_zs_out)" "$_zs_running"
+    fi
+    [[ -n $_zs_calls ]] && _zsagent_close_calls "$_zs_session" "$_zsagent_msg_not_run"
     _zsagent_unlock "$_zs_session"
     # Ctrl+C: say so on a line of its own (TRY_BLOCK_INTERRUPT is set when the block above was interrupted).
     (( TRY_BLOCK_INTERRUPT > 0 )) && print -r -- $'\n\e[90minterrupted\e[0m'
@@ -361,6 +374,7 @@ _zsagent_calls() {
     _zs_cmd=$REPLY
     print -r -- $'\e[90m'"▸ $_zs_cmd"$'\e[0m'
     : >| "$_zs_out"
+    _zs_running=$_zs_id  # until its result is saved; the always block of zsagent saves it if the turn is aborted
     _zsagent_tail "$_zs_out"
     _zs_tail=$REPLY
     _zsagent_shadow
@@ -383,6 +397,7 @@ _zsagent_calls() {
       output: ((if $code == "" then "" else "exit code " + $code + "\n" end) + $output)}' |
     _zsagent_add "$_zs_session" ||
     { _zsagent_fail "cannot save the command result in $_zs_session; stopping"; return 1 }
+  _zs_running=
   shift
   _zsagent_calls "$@"
 }

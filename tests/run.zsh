@@ -234,7 +234,7 @@ test_unanswered_call_closed_next_turn() {
     {type: "function_call", call_id: "old", name: "shell", arguments: "{\"command\":\"true\"}"}]' > $(session)
   turn hi
   assert_eq "$(jq -r '.input[] | select(.call_id == "old" and .type == "function_call_output") | .output' $MOCK/req.1)" \
-    "Interrupted by the user." "closing output"
+    "$_zsagent_msg_unknown" "closing output"
 }
 
 test_failed_save_runs_no_command() {
@@ -369,6 +369,35 @@ test_missing_usage_counts_zero() {
   assert_match $OUT '*· 0 in · 0 out*' footer
 }
 
+# Run a turn in an interactive zsh (-i), where Ctrl+C (SIGINT) and shell errors abort it as at the prompt.
+turn_interactive() {
+  export T MOCK ZSAGENT_HOME ZSAGENT_SESSION
+  zsh -fi $ROOT/tests/run.zsh --turn "$@" > $T/out 2>&1
+  OUT=$(<$T/out)
+}
+
+test_ctrl_c_during_command() {
+  mock_calls 1 'print partial; kill -INT $$; sleep 1; print never' "touch $T/second"
+  turn_interactive go
+  local -A out=("${(@f)$(sq '.[] | select(.type == "function_call_output") | .call_id, (.output | @json)')}")
+  assert_eq $out[c1.1] "$(jq -n --arg t "$_zsagent_msg_aborted"$'\npartial' '$t')" "running call"
+  assert_eq $out[c1.2] "$(jq -n --arg t "$_zsagent_msg_not_run" '$t')" "call not started"
+  [[ ! -e $T/second ]] || fail "second call ran"
+  assert_eq "$(print $MOCK/req.*(N:t))" "req.1" "requests"
+  assert_match $OUT '*interrupted*' "interrupted message"
+  can_lock || fail "lock still held"
+}
+
+test_shell_error_during_command() {
+  mock_calls 1 'print partial; : ${undefined_v?boom}; print never' "touch $T/second"
+  turn_interactive go
+  assert_match "$(sq '.[] | select(.call_id == "c1.1" and .type == "function_call_output") | .output')" \
+    "${(b)_zsagent_msg_aborted}"$'\npartial\n*undefined_v: boom' "running call"
+  assert_match "$(sq '.[] | select(.call_id == "c1.2" and .type == "function_call_output") | .output')" 'not run:*' \
+    "call not started"
+  [[ ! -e $T/second ]] || fail "second call ran"
+}
+
 test_prompt_roundtrip() {
   zle() { : }
   PS1='user %# '
@@ -379,6 +408,12 @@ test_prompt_roundtrip() {
 }
 
 # ---- runner ---------------------------------------------------------------------------------------------------
+
+if [[ $1 == --turn ]]; then  # internal: one turn of zsagent in this shell, with the environment of the calling test
+  source $ROOT/zsagent.plugin.zsh
+  zsagent "${@[2,-1]}"
+  builtin exit $?
+fi
 
 if [[ $1 == --one ]]; then  # internal: run one test in this (fresh) shell
   (( $+functions[$2] )) || { print -r -- "    no test $2"; builtin exit 1 }

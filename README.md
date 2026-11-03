@@ -154,7 +154,7 @@ Downloads, with 11 GB.
 | `zsagent --clear` | Deletes the session file of the current session id and profile; fails while a turn holds the lock |
 | `zsagent --version` | Prints `ZSAGENT_VERSION` |
 | `zsagent --help` | Prints a usage summary of the options |
-| Ctrl+C | Ends the running request or command and prints `interrupted`; the next turn adds the output `Interrupted by the user.` to tool calls without output |
+| Ctrl+C | Ends the running request or command and prints `interrupted`. The interrupted command gets an output that says it may have taken effect, with what it printed until then; the calls of the response not yet run get `not run: …`. If a turn ends without that (e.g. a closed terminal), the next turn gives each call without output `no result recorded: …` |
 
 ### Sessions
 
