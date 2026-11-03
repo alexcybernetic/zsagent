@@ -241,72 +241,7 @@ $(_zsagent_sysinfo)}" '[{role: "system", content: $s}]' >| "$_zs_session") ||
     jq -n --arg q "[$_zs_now · $PWD] $*" '{role: "user", content: $q}' | _zsagent_add "$_zs_session" ||
       { _zsagent_fail "cannot save the message in $_zs_session; nothing was sent"; return 1 }
 
-    while true; do
-      # Stream: show reasoning (grey; OpenAI sends a summary, local servers the reasoning text) and the answer
-      # as they arrive; keep the raw stream in $_zs_raw. The filter keeps two facts between events: whether the
-      # current message has shown text yet (leading whitespace is dropped) and whether the output ends a line.
-      _zsagent_request "$_zs_session" | tee "$_zs_raw" | jq --unbuffered -nRj '
-        foreach (inputs | select(startswith("data: ")) | .[6:] | fromjson) as $e ({text: false, eol: true, out: ""};
-          if $e.type == "response.output_item.added" then .text = false | .out = ""
-          elif $e.type == "response.reasoning_summary_text.delta" or $e.type == "response.reasoning_text.delta" then
-            .out = "\u001b[90m" + $e.delta + "\u001b[0m" | .eol = ($e.delta | endswith("\n"))
-          elif $e.type == "response.output_text.delta" then
-            (if .text then $e.delta else ($e.delta | sub("^\\s+"; "")) end) as $d
-            | .out = $d | .text = (.text or $d != "") | .eol = (if $d == "" then .eol else ($d | endswith("\n")) end)
-          elif ($e.type | test("^response\\.(reasoning_summary_part|reasoning_text|output_text)\\.done$")) then
-            .out = (if .eol then "" else "\n" end) | .eol = true
-          else .out = "" end;
-          .out | select(. != ""))'
-
-      # The complete response is in the response.completed event.
-      _zs_response=$(jq -Rc 'select(startswith("data: ")) | .[6:] | fromjson
-                             | select(.type == "response.completed") | .response' "$_zs_raw")
-      if [[ -z $_zs_response ]]; then
-        # No completed response: the API's message from a plain JSON error body or from a stream event, else a generic one.
-        _zs_error=$(jq -r '.error.message // empty' "$_zs_raw" 2>/dev/null)
-        [[ -z $_zs_error ]] && _zs_error=$(jq -Rr 'select(startswith("data: ")) | .[6:] | fromjson
-          | .response.error.message // .error.message // .message
-            // (.response.incomplete_details.reason | select(.) | "incomplete: " + .) // empty' "$_zs_raw" 2>/dev/null | head -1)
-        _zsagent_fail "${_zs_error:-no response from the API}"
-        return 1
-      fi
-      (( _zs_in += $(jq .usage.input_tokens <<< "$_zs_response") ))
-      (( _zs_outtok += $(jq .usage.output_tokens <<< "$_zs_response") ))
-
-      # Store the output items without null fields. If that fails, no tool call of this response is run.
-      jq '.output[] | del(.. | nulls)' <<< "$_zs_response" | _zsagent_add "$_zs_session" ||
-        { _zsagent_fail "cannot save the response in $_zs_session; no command was run"; return 1 }
-
-      # No tool calls: the model is done; print the footer.
-      _zs_calls=$(jq -c '.output[] | select(.type == "function_call")' <<< "$_zs_response")
-      if [[ -z $_zs_calls ]]; then
-        printf '\e[90m%.1fs · %d in · %d out\e[0m\n' $(( EPOCHREALTIME - _zs_start )) "$_zs_in" "$_zs_outtok"
-        return 0
-      fi
-
-      # Run each call in this shell. Output goes to the file $_zs_out (for the model) and is shown live by a tail
-      # process; no pipe is involved, so a background process started by the command cannot block the turn.
-      for _zs_call in "${(@f)_zs_calls}"; do
-        _zs_cmd=$(jq -r '.arguments | fromjson | .command' <<< "$_zs_call")
-        print -r -- $'\e[90m'"▸ $_zs_cmd"$'\e[0m'
-        : >| "$_zs_out"
-        _zsagent_tail "$_zs_out"
-        _zs_tail=$REPLY
-        _zsagent_shadow
-        # The anonymous function keeps a `return` in the command from leaving zsagent.
-        () { eval "$_zs_cmd" } >| "$_zs_out" 2>&1
-        _zs_code=$?
-        _zsagent_unshadow
-        sleep 0.1  # let tail show the last output
-        kill "$_zs_tail" 2>/dev/null
-        _zs_tail=
-        # If the result cannot be saved, stop: a further request would make the model repeat the command.
-        jq -n --arg id "$(jq -r .call_id <<< "$_zs_call")" --arg code "$_zs_code" --rawfile output "$_zs_out" \
-          '{type: "function_call_output", call_id: $id, output: ("exit code " + $code + "\n" + $output)}' |
-          _zsagent_add "$_zs_session" ||
-          { _zsagent_fail "cannot save the command result in $_zs_session; stopping"; return 1 }
-      done
-    done
+    _zsagent_rounds
   } always {
     # Also after errors and Ctrl+C: stop the live display, restore exit/logout, remove temp files, release the lock.
     [[ -n $_zs_tail ]] && kill "$_zs_tail" 2>/dev/null
@@ -316,6 +251,84 @@ $(_zsagent_sysinfo)}" '[{role: "system", content: $s}]' >| "$_zs_session") ||
     # Ctrl+C: say so on a line of its own (TRY_BLOCK_INTERRUPT is set when the block above was interrupted).
     (( TRY_BLOCK_INTERRUPT > 0 )) && print -r -- $'\n\e[90minterrupted\e[0m'
   }
+}
+
+# The rounds of a turn: send the history, show and save the response, run its tool calls, repeat until a response
+# has no tool call. Recursion instead of loops, here and in _zsagent_calls: a `break` or `continue` in a model
+# command finds no loop of zsagent to leave. Runs inside zsagent and uses its _zs_ variables.
+_zsagent_rounds() {
+  # Stream: show reasoning (grey; OpenAI sends a summary, local servers the reasoning text) and the answer
+  # as they arrive; keep the raw stream in $_zs_raw. The filter keeps two facts between events: whether the
+  # current message has shown text yet (leading whitespace is dropped) and whether the output ends a line.
+  _zsagent_request "$_zs_session" | tee "$_zs_raw" | jq --unbuffered -nRj '
+    foreach (inputs | select(startswith("data: ")) | .[6:] | fromjson) as $e ({text: false, eol: true, out: ""};
+      if $e.type == "response.output_item.added" then .text = false | .out = ""
+      elif $e.type == "response.reasoning_summary_text.delta" or $e.type == "response.reasoning_text.delta" then
+        .out = "\u001b[90m" + $e.delta + "\u001b[0m" | .eol = ($e.delta | endswith("\n"))
+      elif $e.type == "response.output_text.delta" then
+        (if .text then $e.delta else ($e.delta | sub("^\\s+"; "")) end) as $d
+        | .out = $d | .text = (.text or $d != "") | .eol = (if $d == "" then .eol else ($d | endswith("\n")) end)
+      elif ($e.type | test("^response\\.(reasoning_summary_part|reasoning_text|output_text)\\.done$")) then
+        .out = (if .eol then "" else "\n" end) | .eol = true
+      else .out = "" end;
+      .out | select(. != ""))'
+
+  # The complete response is in the response.completed event.
+  _zs_response=$(jq -Rc 'select(startswith("data: ")) | .[6:] | fromjson
+                         | select(.type == "response.completed") | .response' "$_zs_raw")
+  if [[ -z $_zs_response ]]; then
+    # No completed response: the API's message from a plain JSON error body or from a stream event, else a generic one.
+    _zs_error=$(jq -r '.error.message // empty' "$_zs_raw" 2>/dev/null)
+    [[ -z $_zs_error ]] && _zs_error=$(jq -Rr 'select(startswith("data: ")) | .[6:] | fromjson
+      | .response.error.message // .error.message // .message
+        // (.response.incomplete_details.reason | select(.) | "incomplete: " + .) // empty' "$_zs_raw" 2>/dev/null | head -1)
+    _zsagent_fail "${_zs_error:-no response from the API}"
+    return 1
+  fi
+  (( _zs_in += $(jq .usage.input_tokens <<< "$_zs_response") ))
+  (( _zs_outtok += $(jq .usage.output_tokens <<< "$_zs_response") ))
+
+  # Store the output items without null fields. If that fails, no tool call of this response is run.
+  jq '.output[] | del(.. | nulls)' <<< "$_zs_response" | _zsagent_add "$_zs_session" ||
+    { _zsagent_fail "cannot save the response in $_zs_session; no command was run"; return 1 }
+
+  # No tool calls: the model is done; print the footer.
+  _zs_calls=$(jq -c '.output[] | select(.type == "function_call")' <<< "$_zs_response")
+  if [[ -z $_zs_calls ]]; then
+    printf '\e[90m%.1fs · %d in · %d out\e[0m\n' $(( EPOCHREALTIME - _zs_start )) "$_zs_in" "$_zs_outtok"
+    return 0
+  fi
+
+  _zsagent_calls "${(@f)_zs_calls}" || return 1
+  _zsagent_rounds
+}
+
+# Run the tool calls $@ (one JSON object each) in this shell, one after another, and save each result.
+# Output goes to the file $_zs_out (for the model) and is shown live by a tail process; no pipe is involved,
+# so a background process started by the command cannot block the turn.
+_zsagent_calls() {
+  (( $# )) || return 0
+  _zs_call=$1
+  _zs_cmd=$(jq -r '.arguments | fromjson | .command' <<< "$_zs_call")
+  print -r -- $'\e[90m'"▸ $_zs_cmd"$'\e[0m'
+  : >| "$_zs_out"
+  _zsagent_tail "$_zs_out"
+  _zs_tail=$REPLY
+  _zsagent_shadow
+  # The anonymous function keeps a `return` in the command from leaving zsagent.
+  () { eval "$_zs_cmd" } >| "$_zs_out" 2>&1
+  _zs_code=$?
+  _zsagent_unshadow
+  sleep 0.1  # let tail show the last output
+  kill "$_zs_tail" 2>/dev/null
+  _zs_tail=
+  # If the result cannot be saved, stop: a further request would make the model repeat the command.
+  jq -n --arg id "$(jq -r .call_id <<< "$_zs_call")" --arg code "$_zs_code" --rawfile output "$_zs_out" \
+    '{type: "function_call_output", call_id: $id, output: ("exit code " + $code + "\n" + $output)}' |
+    _zsagent_add "$_zs_session" ||
+    { _zsagent_fail "cannot save the command result in $_zs_session; stopping"; return 1 }
+  shift
+  _zsagent_calls "$@"
 }
 
 # List sessions, newest first: marker for the current one, short id, profile, last change, user messages,

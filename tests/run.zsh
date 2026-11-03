@@ -215,6 +215,25 @@ test_user_options_ksharrays_shwordsplit() {
   assert_eq "$(sq '.[] | select(.type == "function_call_output") | .output')" $'exit code 0\na  b' "tool output"
 }
 
+test_break_continue_stay_in_the_command() {
+  mock_calls 1 'break' 'continue 2' 'echo after'
+  mock_text 2 done
+  turn go
+  assert_eq $STATUS 0 status
+  assert_eq "$(sq '[.[] | select(.type == "function_call_output") | .call_id] | join(",")')" "c1.1,c1.2,c1.3" "all calls answered"
+  assert_match "$(sq '.[] | select(.call_id == "c1.3" and .type == "function_call_output") | .output')" '*after*' "later call ran"
+  assert_eq $+functions[exit] 0 "exit function removed"
+}
+
+test_many_rounds() {
+  integer i
+  for i in {1..30}; do mock_calls $i "echo $i"; done
+  mock_text 31 done
+  turn go
+  assert_eq $STATUS 0 status
+  assert_eq "$(sq '[.[] | select(.type == "function_call_output")] | length')" 30 "outputs"
+}
+
 test_prompt_roundtrip() {
   zle() { : }
   PS1='user %# '
