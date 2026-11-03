@@ -398,6 +398,50 @@ test_shell_error_during_command() {
   [[ ! -e $T/second ]] || fail "second call ran"
 }
 
+test_curl_timeouts() {
+  mock_text 1 ok; mock_text 2 ok
+  turn hi
+  assert_eq "${(j: :)${(f)$(<$MOCK/args.1)}[3,8]}" "--connect-timeout 30 --speed-limit 1 --speed-time 600" "curl options"
+  ZSAGENT_STALL_TIMEOUT=0
+  turn again
+  assert_no_match "$(<$MOCK/args.2)" '*speed*' "no stall limit"
+}
+
+test_curl_timeout_message() {
+  touch $MOCK/fail.1
+  curl() { cat > /dev/null; return 28 }
+  turn hi
+  assert_match $OUT '*zsagent: request timed out*' error
+}
+
+test_output_limit() {
+  ZSAGENT_OUTPUT_LIMIT=20
+  mock_calls 1 'print -r -- {a..z}' 'print -r -- short'
+  mock_text 2 done
+  turn go
+  local -a outs=("${(@f)$(sq '.[] | select(.type == "function_call_output") | .output | @json')}")
+  assert_eq $outs[1] '"exit code 0\na b c d e \n[… 32 of 52 characters left out by zsagent …]\nv w x y z\n"' "long output"
+  assert_eq $outs[2] '"exit code 0\nshort\n"' "short output"
+}
+
+test_max_rounds() {
+  ZSAGENT_MAX_ROUNDS=3
+  integer i
+  for i in {1..5}; do mock_calls $i "echo $i"; done
+  turn go
+  assert_eq $STATUS 1 status
+  assert_match $OUT '*stopped after 3 requests*' error
+  assert_eq "$(print $MOCK/req.*(N:t))" "req.1 req.2 req.3" requests
+  assert_eq "$(sq '[.[] | select(.type == "function_call_output")] | length')" 3 "answered calls"
+}
+
+test_invalid_limit() {
+  ZSAGENT_OUTPUT_LIMIT=lots
+  turn hi
+  assert_eq $STATUS 1 status
+  assert_match $OUT '*ZSAGENT_OUTPUT_LIMIT must be a whole number*' error
+}
+
 test_prompt_roundtrip() {
   zle() { : }
   PS1='user %# '

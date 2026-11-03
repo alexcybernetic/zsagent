@@ -15,6 +15,11 @@ Sessions: every conversation is stored in $ZSAGENT_HOME/sessions/<id>.<profile>.
 \`zsagent --new\` starts a new session; \`zsagent --clear\` deletes the history of the current session. \
 To look into an old session without switching, read its file with jq."
 ZSAGENT_MESSAGE_PS1='👾 %# '  # message mode: replaces PS1, so the mode is visible; config.zsh can override it
+# Limits; config.zsh can change them (whole numbers).
+ZSAGENT_OUTPUT_LIMIT=30000   # characters of a command's output the model gets; longer output loses its middle; 0: no limit
+ZSAGENT_MAX_ROUNDS=100       # requests per turn (1-500); then the turn stops, and a new message continues it
+ZSAGENT_CONNECT_TIMEOUT=30   # seconds to connect to the API
+ZSAGENT_STALL_TIMEOUT=600    # seconds a response may send nothing before it is aborted; 0: no limit
 [[ -f $ZSAGENT_HOME/config.zsh ]] && source $ZSAGENT_HOME/config.zsh  # user settings override the defaults above
 zmodload zsh/datetime  # $EPOCHREALTIME, $EPOCHSECONDS and strftime
 # A new session id: a UUID from uuidgen (macOS) or the kernel (Linux).
@@ -54,7 +59,20 @@ _zsagent_config() {
   esac
   [[ -n $_zs_cfg[model] ]] || { _zsagent_fail "profile $_zsagent_profile needs a model"; return 1 }
   [[ -n $_zs_cfg[url] ]] || { _zsagent_fail "profile $_zsagent_profile needs a url"; return 1 }
+  local v
+  for v in ZSAGENT_OUTPUT_LIMIT ZSAGENT_MAX_ROUNDS ZSAGENT_CONNECT_TIMEOUT ZSAGENT_STALL_TIMEOUT; do
+    [[ ${(P)v} == <-> ]] || { _zsagent_fail "$v must be a whole number"; return 1 }
+  done
+  (( ZSAGENT_MAX_ROUNDS >= 1 && ZSAGENT_MAX_ROUNDS <= 500 )) ||
+    { _zsagent_fail "ZSAGENT_MAX_ROUNDS must be 1 to 500 (each round is a nested function call)"; return 1 }
 }
+
+# jq function clip: a command's output as the model gets it, at most ZSAGENT_OUTPUT_LIMIT characters ($limit);
+# of longer output the start and the end, with a note on what was left out.
+_zsagent_jq_clip='def clip: if $limit > 0 and length > $limit
+  then (($limit / 2) | floor) as $h
+    | .[:$h] + "\n[… \(length - $limit) of \(length) characters left out by zsagent …]\n" + .[length - ($limit - $h):]
+  else . end;'
 
 # Session file of this shell in REPLY: <id>.<profile>.json.
 _zsagent_session_file() {
@@ -190,9 +208,11 @@ _zsagent_fail() {
 # The key header is read from a process substitution, so it never appears in curl's arguments (ps).
 _zsagent_request() {
   emulate -L zsh
+  local -a stall  # abort a response that sends less than 1 byte per second for ZSAGENT_STALL_TIMEOUT seconds
+  (( ZSAGENT_STALL_TIMEOUT )) && stall=(--speed-limit 1 --speed-time $ZSAGENT_STALL_TIMEOUT)
   jq -n --arg model $_zs_cfg[model] --slurpfile input $1 --argjson tools $ZSAGENT_TOOLS --argjson options $_zs_cfg[options] \
     '{model: $model, input: $input[0], tools: $tools, stream: true} + $options' |
-    curl -sSN $_zs_cfg[url] \
+    curl -sSN $_zs_cfg[url] --connect-timeout $ZSAGENT_CONNECT_TIMEOUT $stall \
       -H @<(print -r -- "Authorization: Bearer $_zs_cfg[key]") \
       -H "Content-Type: application/json" \
       -d @-
@@ -227,7 +247,7 @@ zsagent() {
   local _zs_session _zs_out _zs_raw _zs_tail
   local _zs_now _zs_response _zs_calls _zs_call _zs_id _zs_cmd _zs_code _zs_running
   local -F _zs_start=$EPOCHREALTIME
-  local -i _zs_in=0 _zs_outtok=0
+  local -i _zs_in=0 _zs_outtok=0 _zs_rounds=0
   local -A _zs_cfg
   _zsagent_config || return 1
   _zsagent_session_file
@@ -269,7 +289,8 @@ $(_zsagent_sysinfo)}" '[{role: "system", content: $s}]' >| "$_zs_session") ||
     [[ -n $_zs_tail ]] && kill "$_zs_tail" 2>/dev/null
     _zsagent_unshadow
     if [[ -n $_zs_running ]]; then  # aborted while a command ran: save what it printed until then
-      _zsagent_close_calls "$_zs_session" "$_zsagent_msg_aborted"$'\n'"$(<$_zs_out)" "$_zs_running"
+      _zsagent_close_calls "$_zs_session" "$_zsagent_msg_aborted"$'\n'"$(jq -Rrs --argjson limit \
+        "$ZSAGENT_OUTPUT_LIMIT" "$_zsagent_jq_clip clip" "$_zs_out")" "$_zs_running"
     fi
     [[ -n $_zs_calls ]] && _zsagent_close_calls "$_zs_session" "$_zsagent_msg_not_run"
     _zsagent_unlock "$_zs_session"
@@ -287,7 +308,9 @@ _zsagent_api_error() {
   [[ -n $msg ]] || msg=$(jq -nRr 'first(inputs | select(startswith("data: ")) | .[6:] | fromjson? // empty
     | .response.error.message // .error.message // .message
       // (.response.incomplete_details.reason | select(.) | "incomplete: " + .) // empty)' $1 2>/dev/null)
-  if [[ -z $msg && $2 != 0 ]]; then
+  if [[ -z $msg && $2 == 28 ]]; then
+    msg="request timed out (no connection within ZSAGENT_CONNECT_TIMEOUT, or nothing received for ZSAGENT_STALL_TIMEOUT seconds)"
+  elif [[ -z $msg && $2 != 0 ]]; then
     msg="request failed (curl exit status $2)"
   elif [[ -z $msg && -s $1 ]]; then
     msg="no completed response from the API: $(head -c 300 $1 | tr -s '\n\t ' ' ')"
@@ -299,6 +322,10 @@ _zsagent_api_error() {
 # has no tool call. Recursion instead of loops, here and in _zsagent_calls: a `break` or `continue` in a model
 # command finds no loop of zsagent to leave. Runs inside zsagent and uses its _zs_ variables.
 _zsagent_rounds() {
+  if (( ++_zs_rounds > ZSAGENT_MAX_ROUNDS )); then
+    _zsagent_fail "stopped after $ZSAGENT_MAX_ROUNDS requests in this turn (ZSAGENT_MAX_ROUNDS); a new message continues"
+    return 1
+  fi
   # Stream: show reasoning (grey; OpenAI sends a summary, local servers the reasoning text) and the answer
   # as they arrive; keep the raw stream in $_zs_raw. The filter keeps two facts between events: whether the
   # current message has shown text yet (leading whitespace is dropped) and whether the output ends a line.
@@ -392,9 +419,9 @@ _zsagent_calls() {
     _zs_code=
   fi
   # If the result cannot be saved, stop: a further request would make the model repeat the command.
-  jq -n --arg id "$_zs_id" --arg code "$_zs_code" --rawfile output "$_zs_out" \
-    '{type: "function_call_output", call_id: $id,
-      output: ((if $code == "" then "" else "exit code " + $code + "\n" end) + $output)}' |
+  jq -n --arg id "$_zs_id" --arg code "$_zs_code" --rawfile output "$_zs_out" --argjson limit "$ZSAGENT_OUTPUT_LIMIT" \
+    "$_zsagent_jq_clip"'{type: "function_call_output", call_id: $id,
+      output: ((if $code == "" then "" else "exit code " + $code + "\n" end) + ($output | clip))}' |
     _zsagent_add "$_zs_session" ||
     { _zsagent_fail "cannot save the command result in $_zs_session; stopping"; return 1 }
   _zs_running=

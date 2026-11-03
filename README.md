@@ -70,6 +70,10 @@ The plugin sources `$ZSAGENT_HOME/config.zsh` when it is loaded. [`config.zsh.ex
 | `ZSAGENT_SYSTEM` | Replaces the built-in system prompt and the appended system information; written as first item of new sessions |
 | `ZSAGENT_MESSAGE_PS1` | Replaces `PS1` in message mode; default `👾 %# ` |
 | `ZSAGENT_HOME` | Directory of `config.zsh` and `sessions/`; default `~/.zsagent`; set before `source` |
+| `ZSAGENT_OUTPUT_LIMIT` | Characters of a command's output that the model gets; of longer output it gets the start and the end and a note on what was left out; the terminal shows all of it; default `30000`, `0`: no limit |
+| `ZSAGENT_MAX_ROUNDS` | Requests per turn, `1` to `500`; then the turn stops with an error, and the next message continues; default `100` |
+| `ZSAGENT_CONNECT_TIMEOUT` | Seconds to connect to the API; default `30` |
+| `ZSAGENT_STALL_TIMEOUT` | Seconds a response may send nothing before it is aborted; default `600`, `0`: no limit |
 
 To apply a change of `config.zsh` in a running shell:
 

@@ -31,3 +31,10 @@ ZSAGENT_PROFILE=openai
 # Custom system prompt for new sessions. It replaces the built-in one completely, including the appended
 # system information (OS, zsh version).
 # ZSAGENT_SYSTEM="You are a terse shell assistant. Answer in one line."
+
+# Limits (whole numbers). Characters of a command's output the model gets (the middle of longer output is left
+# out; 0: no limit), requests per turn (1-500), seconds to connect, seconds a response may send nothing (0: no limit).
+# ZSAGENT_OUTPUT_LIMIT=30000
+# ZSAGENT_MAX_ROUNDS=100
+# ZSAGENT_CONNECT_TIMEOUT=30
+# ZSAGENT_STALL_TIMEOUT=600
