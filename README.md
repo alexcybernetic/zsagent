@@ -168,6 +168,21 @@ Downloads, with 11 GB.
 - zsagent sets the sessions directory to mode 700 and the file to mode 600 at every turn. Other user accounts can't read it; processes of the same user account, including the model's commands, and root can.
 - Several shells can use the same session, but only one turn at a time: a turn takes a lock on `<id>.<profile>.lock` (an fcntl lock, `zsystem flock`), and a turn started meanwhile, from another shell or by a tool call in the same shell, fails with an error. The system releases the lock when the shell ends, so a lock is never left behind.
 
+### Data and secrets
+
+What zsagent stores and sends, and where secrets can end up:
+
+| Data | Where it goes | How long |
+|---|---|---|
+| Messages, commands, command output, model output | The session file, and the API provider with every request of the session | Until you delete the session (`zsagent --clear` or `rm`) |
+| Message-mode lines | The zsh history (`$HISTFILE`), except lines with a leading space when `HIST_IGNORE_SPACE` is set | As your history keeps them |
+| The raw response stream and the output of the running command | Temp files from `mktemp` (mode 600) | Deleted at the end of the turn |
+| API keys | `config.zsh` and the shell variable `ZSAGENT_PROFILES`; the model's commands can read both | As long as they are there |
+
+- Before a command's output is saved or sent, zsagent replaces each profile key (8 or more characters) in it with `[API key removed by zsagent]`. Other secrets in the output, e.g. tokens, passwords, or the contents of `.env` files, are saved and sent as they are.
+- When the plugin loads, it warns if other users can read `config.zsh`. Create it with mode 600 (see Install), or run `chmod 600 ~/.zsagent/config.zsh`.
+- The terminal shows each command before it runs; zsagent does not hide commands, even ones with secrets in them.
+
 ## Point to different versions
 
 Load another copy of zsagent into the current shell, e.g. a working copy, with its own config and sessions:

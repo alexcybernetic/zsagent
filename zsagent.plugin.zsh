@@ -31,6 +31,10 @@ _zsagent_new_id() {
 [[ -n $ZSAGENT_SESSION ]] || { _zsagent_new_id; ZSAGENT_SESSION=$REPLY }
 _zsagent_profile=${_zsagent_profile:-$ZSAGENT_PROFILE}
 zmodload -F zsh/stat b:zstat  # zstat for file times (without replacing the stat command)
+# config.zsh holds the API keys: warn when other users can read it.
+if [[ -f $ZSAGENT_HOME/config.zsh ]] && (( 8#$(zstat -o +mode $ZSAGENT_HOME/config.zsh) & 8#077 )); then
+  print -r -- "zsagent: other users can read $ZSAGENT_HOME/config.zsh, which holds API keys; chmod 600 it" >&2
+fi
 zmodload -F zsh/system b:zsystem  # zsystem flock for the session locks
 
 ZSAGENT_TOOLS='[{"type": "function", "name": "shell",
@@ -52,6 +56,8 @@ _zsagent_config() {
     | .provider // "", .url // "", .key // "", .model // "", (.options // {} | tojson)' <<< $ZSAGENT_PROFILES)}")
   (( $#f == 5 )) || { _zsagent_fail "unknown profile '$_zsagent_profile' (zsagent --profile lists them)"; return 1 }
   _zs_cfg=(provider "$f[1]" url "$f[2]" key "$f[3]" model "$f[4]" options "$f[5]")  # quoted: fields may be empty
+  # The keys of all profiles (8 characters or more), removed from tool output before it is saved or sent.
+  _zs_cfg[secrets]=$(jq -c '[.[] | objects | .key | strings | select(length >= 8)] | unique' <<< $ZSAGENT_PROFILES)
   case $_zs_cfg[provider] in
     openai) _zs_cfg[url]=https://api.openai.com/v1/responses ;;
     custom) ;;
@@ -67,12 +73,14 @@ _zsagent_config() {
     { _zsagent_fail "ZSAGENT_MAX_ROUNDS must be 1 to 500 (each round is a nested function call)"; return 1 }
 }
 
-# jq function clip: a command's output as the model gets it, at most ZSAGENT_OUTPUT_LIMIT characters ($limit);
-# of longer output the start and the end, with a note on what was left out.
-_zsagent_jq_clip='def clip: if $limit > 0 and length > $limit
-  then (($limit / 2) | floor) as $h
-    | .[:$h] + "\n[… \(length - $limit) of \(length) characters left out by zsagent …]\n" + .[length - ($limit - $h):]
-  else . end;'
+# jq function output: a command's output as the model gets it. The API keys of the profiles ($secrets) are
+# replaced; of output longer than ZSAGENT_OUTPUT_LIMIT characters ($limit) the start and the end are kept,
+# with a note on what was left out.
+_zsagent_jq_output='def output: reduce $secrets[] as $s (.; split($s) | join("[API key removed by zsagent]"))
+  | if $limit > 0 and length > $limit
+    then (($limit / 2) | floor) as $h
+      | .[:$h] + "\n[… \(length - $limit) of \(length) characters left out by zsagent …]\n" + .[length - ($limit - $h):]
+    else . end;'
 
 # Session file of this shell in REPLY: <id>.<profile>.json.
 _zsagent_session_file() {
@@ -290,7 +298,8 @@ $(_zsagent_sysinfo)}" '[{role: "system", content: $s}]' >| "$_zs_session") ||
     _zsagent_unshadow
     if [[ -n $_zs_running ]]; then  # aborted while a command ran: save what it printed until then
       _zsagent_close_calls "$_zs_session" "$_zsagent_msg_aborted"$'\n'"$(jq -Rrs --argjson limit \
-        "$ZSAGENT_OUTPUT_LIMIT" "$_zsagent_jq_clip clip" "$_zs_out")" "$_zs_running"
+        "$ZSAGENT_OUTPUT_LIMIT" --argjson secrets "${_zs_cfg[secrets]}" "$_zsagent_jq_output output" "$_zs_out")" \
+        "$_zs_running"
     fi
     [[ -n $_zs_calls ]] && _zsagent_close_calls "$_zs_session" "$_zsagent_msg_not_run"
     _zsagent_unlock "$_zs_session"
@@ -420,8 +429,8 @@ _zsagent_calls() {
   fi
   # If the result cannot be saved, stop: a further request would make the model repeat the command.
   jq -n --arg id "$_zs_id" --arg code "$_zs_code" --rawfile output "$_zs_out" --argjson limit "$ZSAGENT_OUTPUT_LIMIT" \
-    "$_zsagent_jq_clip"'{type: "function_call_output", call_id: $id,
-      output: ((if $code == "" then "" else "exit code " + $code + "\n" end) + ($output | clip))}' |
+    --argjson secrets "${_zs_cfg[secrets]}" "$_zsagent_jq_output"'{type: "function_call_output", call_id: $id,
+      output: ((if $code == "" then "" else "exit code " + $code + "\n" end) + ($output | output))}' |
     _zsagent_add "$_zs_session" ||
     { _zsagent_fail "cannot save the command result in $_zs_session; stopping"; return 1 }
   _zs_running=

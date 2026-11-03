@@ -72,8 +72,9 @@ setup() {
   T=$(mktemp -d)
   MOCK=$T/mock ZSAGENT_HOME=$T/home
   mkdir -p $MOCK $ZSAGENT_HOME
-  print -r -- "ZSAGENT_PROFILES='{\"mock\": {\"provider\": \"custom\", \"url\": \"http://mock.invalid/v1/responses\", \
-\"key\": \"secret-key\", \"model\": \"m\"}}'" > $ZSAGENT_HOME/config.zsh
+  (umask 077; print -r -- "ZSAGENT_PROFILES='{\"mock\": {\"provider\": \"custom\", \"url\": \"http://mock.invalid/v1/responses\", \
+\"key\": \"secret-key\", \"model\": \"m\"}, \"other\": {\"provider\": \"openai\", \"key\": \"sk-other-key\", \"model\": \"m\"}}'" \
+    > $ZSAGENT_HOME/config.zsh)
   source $ROOT/zsagent.plugin.zsh
 }
 
@@ -440,6 +441,26 @@ test_invalid_limit() {
   turn hi
   assert_eq $STATUS 1 status
   assert_match $OUT '*ZSAGENT_OUTPUT_LIMIT must be a whole number*' error
+}
+
+test_api_keys_removed_from_output() {
+  mock_calls 1 'print -r -- $ZSAGENT_PROFILES' "jq -r '.[].key' <<< \$ZSAGENT_PROFILES | sed 's/^/x-/; s/\$/-y/'"
+  mock_text 2 done
+  turn go
+  local all=$(<$(session))$(<$MOCK/req.2)
+  assert_no_match $all '*secret-key*' "first key"
+  assert_no_match $all '*sk-other-key*' "other profile's key"
+  assert_eq "$(sq '.[] | select(.call_id == "c1.2" and .type == "function_call_output") | .output')" \
+    $'exit code 0\nx-[API key removed by zsagent]-y\nx-[API key removed by zsagent]-y' "replaced keys"
+}
+
+test_config_readable_by_others_warns() {
+  chmod 644 $ZSAGENT_HOME/config.zsh
+  local warn=$(source $ROOT/zsagent.plugin.zsh 2>&1)
+  assert_match $warn '*other users can read*config.zsh*chmod 600*' warning
+  chmod 600 $ZSAGENT_HOME/config.zsh
+  warn=$(source $ROOT/zsagent.plugin.zsh 2>&1)
+  assert_eq "$warn" "" "no warning for mode 600"
 }
 
 test_prompt_roundtrip() {
