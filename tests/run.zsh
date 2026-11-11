@@ -804,6 +804,17 @@ test_profile_is_the_one_config_names() {
   assert_eq "$(jq -r .model $MOCK/req.4)" m2 "the config's profile again after config.zsh changed"
 }
 
+test_resume_names_one_of_several_profiles() {
+  mkdir -p $ZSAGENT_HOME/sessions
+  print -r -- '[]' > $ZSAGENT_HOME/sessions/abcd1234.mock.json
+  print -r -- '[]' > $ZSAGENT_HOME/sessions/abcd1234.other.json
+  assert_match "$(zsagent --resume abcd 2>&1)" '*2 sessions match*<id>.<profile>*' "id of two profiles"
+  assert_eq "$(zsagent --resume abcd.other)" "resumed abcd1234 (other)" "id and profile"
+  zsagent --resume abcd.other > /dev/null
+  assert_eq "$ZSAGENT_SESSION $_zsagent_profile" "abcd1234 other" "session and profile of the shell"
+  assert_match "$(zsagent --resume none 2>&1)" "*0 sessions match 'none'" "no session"
+}
+
 test_resumed_profile_not_in_config() {
   mkdir -p $ZSAGENT_HOME/sessions
   print -r -- '[]' > $ZSAGENT_HOME/sessions/abcd.gone.json

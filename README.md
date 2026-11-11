@@ -159,7 +159,7 @@ Downloads, with 11 GB.
 | `zsagent --profile` | Lists the profiles: name, provider, model, url |
 | `zsagent --profile <name>` | Sets the shell's profile and a new session id |
 | `zsagent --sessions` | Lists the session files: id prefix, profile, modification time, number of user messages, first user message |
-| `zsagent --resume <id>` | Sets the shell's session id and profile from the one session file whose id starts with `<id>`; fails if none or several match |
+| `zsagent --resume <id>` | Sets the shell's session id and profile from the one session file whose id starts with `<id>`; fails if none or several match. When several profiles have a session with that id, `<id>.<profile>` names one |
 | `zsagent --new` | Sets a new session id; the profile stays, the previous session file is kept |
 | `zsagent --clear` | Deletes the session file of the current session id and profile; fails while a turn holds the lock |
 | `zsagent --reload` | Reads `config.zsh` again and prints the profile it names, which the shell uses from then on; zsagent also reads the file by itself when it changed |
