@@ -7,7 +7,7 @@ zsagent is a zsh plugin, the file `zsagent.plugin.zsh`. It POSTs the session his
 It is:
 
 - **a prototype** for experiments and for studying unrestricted model behavior.
-- **minimal:** one zsh file of about 30 KB.
+- **minimal:** one zsh file of about 40 KB.
 - **agentic:** zsagent runs each `shell` tool call of the model in that shell and sends the output back, until a response contains no tool call.
 - **portable:** runtime dependencies are zsh, `curl`, `jq`, and `uuidgen` or `/proc`.
 - **transparent:** the session file is the complete history as a JSON array: the `system` item, the `user` items, the API output items (`reasoning`, `message`, `function_call`) and the `function_call_output` items. It is exactly the `input` of the next request.
@@ -40,9 +40,9 @@ Tested on macOS 27 with zsh 5.9 and jq 1.7.1.
 
 ### Install
 
-1. Create the directory:
+1. Create the directory with mode 700:
    ```zsh
-   mkdir -p ~/.zsagent
+   mkdir -p ~/.zsagent && chmod 700 ~/.zsagent
    ```
 2. Download zsagent and extract it into the directory:
    ```zsh
@@ -66,7 +66,7 @@ The plugin sources `$ZSAGENT_HOME/config.zsh` when it is loaded. [`config.zsh.ex
 | Variable | Meaning |
 |---|---|
 | `ZSAGENT_PROFILES` | The profiles, as one JSON object |
-| `ZSAGENT_PROFILE` | The profile of a new shell; empty: the first key of `ZSAGENT_PROFILES` |
+| `ZSAGENT_PROFILE` | The profile to use; empty: the first key of `ZSAGENT_PROFILES`. It applies whenever `config.zsh` is read: when the plugin loads, when the file changed, and on `zsagent --reload` |
 | `ZSAGENT_SYSTEM` | Replaces the built-in system prompt and the appended system information; written as first item of new sessions |
 | `ZSAGENT_MESSAGE_PS1` | Replaces `PS1` in message mode; default `👾 %# ` |
 | `ZSAGENT_DIM` | Escape sequence for reasoning, `▸` command lines and the footer; default `$'\e[2m'` (faint: the text color, dimmed), e.g. `$'\e[38;5;245m'` for grey |
@@ -97,6 +97,10 @@ ZSAGENT_PROFILE=openai
 | `options` | JSON object merged into the request with jq `+`; its fields override `model`, `input`, `tools` and `stream` |
 
 `ZSAGENT_PROFILES` is a zsh string in single quotes, so the JSON contains no single quote.
+
+A shell uses the profile that `config.zsh` names. `zsagent --profile <name>` and `zsagent --resume <id>` set another one for that shell, until `config.zsh` is read again. The session id of the shell stays when the profile changes with `config.zsh`; each profile has its own session file for that id.
+
+A turn that is running when `config.zsh` changes finishes with the profile it started with. At the next `zsagent` command in that shell, zsagent prints `zsagent: config.zsh changed: profile <new> (was <old>)` and uses the new profile.
 
 ### Uninstall
 
@@ -139,6 +143,12 @@ Downloads, with 11 GB.
 - **Message mode:** Enter sends the line as a user message, prefixed with `[<time> · <working directory>]`.
 - **Shift+Tab** (`^[[Z`) switches between command and message mode and redraws the prompt.
 - Loading the plugin sets command mode.
+- zsagent replaces the `accept-line` widget. A widget that another plugin installed there before stays in use: zsagent passes every Enter to it, except the Enter that sends a message.
+
+### Your options and aliases
+
+- The model's commands run with the options and aliases of your shell, and `setopt` in a command stays in effect.
+- zsagent's own code runs with the default options of zsh and without aliases: aliases such as `mv -i` or options such as `SH_WORD_SPLIT`, `KSH_ARRAYS`, `NO_CLOBBER` or `NO_UNSET` do not change what it does.
 
 ### Commands
 
@@ -152,18 +162,22 @@ Downloads, with 11 GB.
 | `zsagent --resume <id>` | Sets the shell's session id and profile from the one session file whose id starts with `<id>`; fails if none or several match |
 | `zsagent --new` | Sets a new session id; the profile stays, the previous session file is kept |
 | `zsagent --clear` | Deletes the session file of the current session id and profile; fails while a turn holds the lock |
-| `zsagent --reload` | Reads `config.zsh` again; zsagent also does this by itself when the file changed |
+| `zsagent --reload` | Reads `config.zsh` again and prints the profile it names, which the shell uses from then on; zsagent also reads the file by itself when it changed |
 | `zsagent --version` | Prints `ZSAGENT_VERSION` |
 | `zsagent --help` | Prints a usage summary of the options |
-| Ctrl+C | Ends the running request or command and prints `interrupted`. The interrupted command gets an output that says it may have taken effect, with what it printed until then; the calls of the response not yet run get `not run: …`. If a turn ends without that (e.g. a closed terminal), the next turn gives each call without output `no result recorded: …` |
+| Ctrl+C | The first Ctrl+C ends the turn: the running request or command stops, no further call is run and no further request is sent, and zsagent prints `interrupted`. That also holds when the running program handles Ctrl+C itself and exits normally (e.g. `ping`). For this, job control is off while a model command runs (no `fg`, `bg` or Ctrl+Z suspend inside it) and on again afterwards. The interrupted command gets an output that says it may have taken effect, with what it printed until then; the calls of the response not yet run get `not run: …`. If a turn ends without that (e.g. a closed terminal), the next turn gives each call without output `no result recorded: …` |
 
 ### Sessions
 
 - The session id (UUID), is created when the plugin is loaded in a shell; it is kept when the plugin is sourced again.
 - A session is the file `~/.zsagent/sessions/<id>.<profile>.json`, a JSON array.
 - It holds the system prompt, each user message, each API output item without null fields, and each tool output as `exit code <N>` plus the command's output. A tool call that cannot be run (another tool than `shell`, arguments that are not a JSON object with a non-empty string `command`) is not run; its output is `error: <reason>; nothing was run`.
+- A command's output is what it printed until it returned. What a background process started by the command prints later is not shown and not sent; redirect it to a file to keep it.
+- If zsagent cannot read the output of a command that ran (the command deleted the `.out` file, or changed `ZSAGENT_OUTPUT_LIMIT` to something that is not a number), the tool output is `exit code <N>` plus a note that says so.
+- A response with a tool call without a `call_id` is not saved and none of its calls is run: the turn ends with an error, and the next message continues with a valid history.
 - zsagent sets the sessions directory to mode 700 and the file to mode 600 at every turn. Other user accounts can't read it; processes of the same user account, including the model's commands, and root can.
 - Several shells can use the same session, but only one turn at a time: a turn takes a lock on `<id>.<profile>.lock` (an fcntl lock, `zsystem flock`), and a turn started meanwhile, from another shell or by a tool call in the same shell, fails with an error. The system releases the lock when the shell ends, so a lock is never left behind.
+- A tool call can start a turn of another session in the same shell (`zsagent --new` or `zsagent --profile <name>`, then a message). `exit` and `logout` stay replaced until the outer command ends.
 
 ### Data and secrets
 
@@ -173,8 +187,20 @@ What zsagent stores and sends, and where secrets can end up:
 |---|---|---|
 | Messages, commands, command output, model output | The session file, and the API provider with every request of the session | Until you delete the session (`zsagent --clear` or `rm`) |
 | Message-mode lines | The zsh history (`$HISTFILE`), except lines with a leading space when `HIST_IGNORE_SPACE` is set | As your history keeps them |
-| The raw response stream and the output of the running command | Temp files from `mktemp` (mode 600) | Deleted at the end of the turn |
+| The raw response stream and the output of the running command | `<id>.<profile>.raw` and `<id>.<profile>.out` beside the session file (mode 600, in the sessions directory with mode 700) | The output file is deleted when the command's result is saved, the stream file at the end of the turn, also after an error or Ctrl+C. After a turn that was killed (closed terminal, power loss) they stay until the next turn of that session or `zsagent --clear` |
 | API keys | `config.zsh` and the shell variable `ZSAGENT_PROFILES`; the model's commands can read both | As long as they are there |
+
+File permissions, all owned by your user account:
+
+| Path | Mode | Set by |
+|---|---|---|
+| `~/.zsagent` (`$ZSAGENT_HOME`) | 700 | You (Install, step 1) |
+| `config.zsh` | 600 | You (Install, step 3) |
+| `sessions/` | 700 | zsagent, at every turn |
+| `sessions/<id>.<profile>.json`, `.lock`, `.raw`, `.out` | 600 | zsagent |
+| `zsagent.plugin.zsh` and the other downloaded files | 644 | The download; they hold no secrets |
+
+A directory needs the `x` permission for its owner. If `~/.zsagent` lacks it (e.g. mode 600), zsagent cannot find `config.zsh` and fails with `no profile configured`; `chmod 700 ~/.zsagent` corrects it.
 
 - Before a command's output is saved or sent, zsagent replaces each profile key (8 or more characters) in it with `[API key removed by zsagent]`. Other secrets in the output, e.g. tokens, passwords, or the contents of `.env` files, are saved and sent as they are.
 - When the plugin loads, it warns if other users can read `config.zsh`. Create it with mode 600 (see Install), or run `chmod 600 ~/.zsagent/config.zsh`.
@@ -187,7 +213,7 @@ Load another copy of zsagent into the current shell, e.g. a working copy, with i
 1. Change into the directory of that copy.
 2. Create the directory for its config and sessions:
    ```zsh
-   mkdir -p ~/.zsagent-dev
+   mkdir -p ~/.zsagent-dev && chmod 700 ~/.zsagent-dev
    ```
 3. If `~/.zsagent-dev/config.zsh` does not exist, create it and fill in the profiles:
    ```zsh
